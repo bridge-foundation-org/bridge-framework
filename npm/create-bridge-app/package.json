@@ -1,0 +1,17 @@
+{
+  "name": "@bridge-framework/create-bridge-app",
+  "version": "0.1.0",
+  "description": "Initialize a Bridge project with a Vite frontend",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "create-bridge-app": "bin/create-bridge-app.js"
+  },
+  "files": [
+    "bin",
+    "templates"
+  ],
+  "scripts": {
+    "publish:npm": "npm publish --access public"
+  }
+}

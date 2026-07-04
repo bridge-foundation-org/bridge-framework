@@ -1,0 +1,3 @@
+[workspace]
+members = ["daemon", "cli", "protocol", "db", "compiler", "codegen", "miniredis", "e2e-tests"]
+resolver = "2"

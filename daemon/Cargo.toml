@@ -1,0 +1,11 @@
+[package]
+name = "daemon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+protocol = { path = "..\\protocol" }
+db = { path = "..\\db" }
+compiler = { path = "..\\compiler" }
+codegen = { path = "..\\codegen" }
+miniredis = { path = "..\\miniredis" }

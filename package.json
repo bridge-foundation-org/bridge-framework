@@ -1,0 +1,54 @@
+{
+  "name": "bridge-framework-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bridge Framework — Encore-inspired backend framework in Rust",
+  "scripts": {
+    "check": "bash scripts/check.bash",
+    "build": "cargo build --workspace --release",
+    "build:scripts": "bash scripts/build.sh",
+    "build:frontend": "npm run build --prefix frontend",
+    "deploy": "bash scripts/deploy.sh",
+    "dev": "npm run dev --prefix frontend",
+    "dev:daemon": "cargo run -p daemon",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev:all": "concurrently \"npm run dev:daemon\" \"npm run dev:frontend\"",
+    "start": "bash scripts/dev/start-dev.sh",
+    "start:windows": "scripts\\dev\\start-dev.bat",
+    "test": "cargo test --workspace",
+    "test:e2e": "cargo test -p e2e-tests",
+    "fmt": "cargo fmt --all",
+    "lint": "cargo clippy --workspace -- -D warnings",
+    "clean": "cargo clean && npm run clean --prefix frontend",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "docker:reset": "docker-compose down -v && docker-compose up -d"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/bridge-framework.git"
+  },
+  "keywords": [
+    "bridge",
+    "encore",
+    "framework",
+    "backend",
+    "rust",
+    "typescript",
+    "codegen",
+    "docker",
+    "postgresql",
+    "redis",
+    "miniredis"
+  ],
+  "author": "Bridge Framework Contributors",
+  "license": "MIT"
+}
