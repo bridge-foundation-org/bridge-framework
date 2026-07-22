@@ -8,3 +8,7 @@ description = "End-to-end integration tests for the full Bridge daemon stack"
 
 [dependencies]
 protocol = { path = "../protocol" }
+compiler = { path = "../compiler" }
+codegen  = { path = "../codegen" }
+db       = { path = "../db" }
+miniredis = { path = "../miniredis" }
