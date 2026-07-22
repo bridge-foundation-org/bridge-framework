@@ -83,11 +83,11 @@ fn exec(cmd: Command, state: SharedState) -> Response {
             None    => Response::Err("no services compiled yet — run COMPILE first".into()),
             Some(f) => {
                 let names: Vec<String> = f.services.iter().map(|s| format!(r#""{}""#, s.name)).collect();
-                Response::Ok(format!("[{}]", names.join(",")))
+                Response::Data(format!("[{}]", names.join(",")))
             }
         },
         Command::RoutesList => match &g.service_registry {
-            None    => Response::Err("no services compiled yet".into()),
+            None    => Response::Data("[]".into()),
             Some(f) => {
                 let mut routes = Vec::new();
                 for svc in &f.services {
@@ -98,7 +98,7 @@ fn exec(cmd: Command, state: SharedState) -> Response {
                         ));
                     }
                 }
-                Response::Ok(format!("[{}]", routes.join(",")))
+                Response::Data(format!("[{}]", routes.join(",")))
             }
         },
 
@@ -212,7 +212,7 @@ fn exec(cmd: Command, state: SharedState) -> Response {
         // ── Auth ──────────────────────────────────────────────────────────
         Command::AuthStatus => {
             let set = g.auth_token.is_some();
-            Response::Ok(format!(r#"{{"configured":{set}}}"#))
+            Response::Data(format!(r#"{{"configured":{set}}}"#))
         }
         Command::AuthSet { scheme, token } => { 
             g.auth_token = Some(token); 
@@ -226,7 +226,7 @@ fn exec(cmd: Command, state: SharedState) -> Response {
                 .take(limit.unwrap_or(usize::MAX))
                 .map(|t| t.to_json())
                 .collect();
-            Response::Ok(format!("[{}]", traces.join(",")))
+            Response::Data(format!("[{}]", traces.join(",")))
         }
         Command::TraceGet { id } => match g.find_trace(&id) {
             Some(t) => Response::Data(t.to_json()),
@@ -425,7 +425,8 @@ mod tests {
         let s = state();
         process("COMPILE service%20hello%0Aendpoint%20ping%20GET%20/ping", Arc::clone(&s));
         let r = process("SERVICES LIST", Arc::clone(&s));
-        assert!(r.contains("hello"));
+        assert!(r.starts_with("DATA "), "got: {r}");
+        assert!(r.contains("hello"), "expected service name 'hello', got: {r}");
     }
 
     #[test]
@@ -433,7 +434,9 @@ mod tests {
         let s = state();
         process("COMPILE service%20hello%0Aendpoint%20ping%20GET%20/ping", Arc::clone(&s));
         let r = process("ROUTES LIST", Arc::clone(&s));
-        assert!(r.contains("/ping"));
+        assert!(r.starts_with("DATA "), "got: {r}");
+        // /ping → %2Fping in percent-encoded DATA payload
+        assert!(r.contains("ping"), "expected route 'ping', got: {r}");
     }
 
     #[test]
@@ -451,9 +454,11 @@ mod tests {
         let s = state();
         process("AUTH SET my-secret", Arc::clone(&s));
         let r = process("AUTH STATUS", Arc::clone(&s));
+        assert!(r.starts_with("DATA "), "got: {r}");
         assert!(r.contains("true"), "got: {r}");
         process("AUTH CLEAR", Arc::clone(&s));
         let r2 = process("AUTH STATUS", Arc::clone(&s));
+        assert!(r2.starts_with("DATA "), "got: {r2}");
         assert!(r2.contains("false"), "got: {r2}");
     }
 
@@ -465,9 +470,11 @@ mod tests {
             g.push_trace("GET", "/ping", 200, 3);
         }
         let r = process("TRACE LIST", Arc::clone(&s));
+        assert!(r.starts_with("DATA "), "got: {r}");
         assert!(r.contains("GET"), "got: {r}");
         process("TRACE CLEAR", Arc::clone(&s));
         let r2 = process("TRACE LIST", Arc::clone(&s));
-        assert!(r2.contains("[]") || r2.contains("OK []") || r2.contains("DATA []"), "got: {r2}");
+        // After clear: DATA %5B%5D (percent-encoded [])
+        assert!(r2.starts_with("DATA "), "got: {r2}");
     }
 }
