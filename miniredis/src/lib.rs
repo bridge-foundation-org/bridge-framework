@@ -102,6 +102,7 @@ pub fn parse_resp(reader: &mut impl BufRead) -> Result<Resp, String> {
 enum StoreVal {
     String(String),
     List(Vec<String>),
+    Hash(HashMap<String, String>),
 }
 
 struct Entry {
@@ -115,11 +116,16 @@ impl Entry {
         Entry { val: StoreVal::String(v), expires_at: Some(Instant::now() + ttl) }
     }
     fn list() -> Self { Entry { val: StoreVal::List(vec![]), expires_at: None } }
+    fn hash() -> Self { Entry { val: StoreVal::Hash(HashMap::new()), expires_at: None } }
     fn is_expired(&self) -> bool {
         self.expires_at.map_or(false, |t| Instant::now() >= t)
     }
     fn type_name(&self) -> &'static str {
-        match &self.val { StoreVal::String(_) => "string", StoreVal::List(_) => "list" }
+        match &self.val {
+            StoreVal::String(_) => "string",
+            StoreVal::List(_)   => "list",
+            StoreVal::Hash(_)   => "hash",
+        }
     }
 }
 
@@ -313,6 +319,166 @@ impl Store {
             },
         }
     }
+
+    // --- HASH commands ---
+
+    /// HSET key field value [field value ...]  — returns count of new fields added.
+    fn hset(&mut self, key: &str, pairs: &[(String, String)]) -> Resp {
+        let e = self.data.entry(key.to_string()).or_insert_with(Entry::hash);
+        if e.is_expired() { *e = Entry::hash(); }
+        match &mut e.val {
+            StoreVal::Hash(h) => {
+                let mut added = 0i64;
+                for (f, v) in pairs {
+                    if h.insert(f.clone(), v.clone()).is_none() { added += 1; }
+                }
+                Resp::int(added)
+            }
+            _ => Resp::err("WRONGTYPE not a hash"),
+        }
+    }
+
+    /// HSETNX key field value — set only if field doesn't exist. Returns 1 if set, 0 if not.
+    fn hsetnx(&mut self, key: &str, field: &str, value: &str) -> Resp {
+        let e = self.data.entry(key.to_string()).or_insert_with(Entry::hash);
+        if e.is_expired() { *e = Entry::hash(); }
+        match &mut e.val {
+            StoreVal::Hash(h) => {
+                if h.contains_key(field) {
+                    Resp::int(0)
+                } else {
+                    h.insert(field.to_string(), value.to_string());
+                    Resp::int(1)
+                }
+            }
+            _ => Resp::err("WRONGTYPE not a hash"),
+        }
+    }
+
+    /// HGET key field
+    fn hget(&mut self, key: &str, field: &str) -> Resp {
+        match self.live(key) {
+            None => Resp::null(),
+            Some(e) => match &e.val {
+                StoreVal::Hash(h) => h.get(field).map(|v| Resp::bulk(v.clone())).unwrap_or(Resp::null()),
+                _ => Resp::err("WRONGTYPE not a hash"),
+            },
+        }
+    }
+
+    /// HMGET key field [field ...] — returns array of values (null for missing).
+    fn hmget(&mut self, key: &str, fields: &[String]) -> Resp {
+        match self.live(key) {
+            None => Resp::Array(fields.iter().map(|_| Resp::null()).collect()),
+            Some(e) => match &e.val {
+                StoreVal::Hash(h) => Resp::Array(
+                    fields.iter().map(|f| h.get(f.as_str()).map(|v| Resp::bulk(v.clone())).unwrap_or(Resp::null())).collect()
+                ),
+                _ => Resp::err("WRONGTYPE not a hash"),
+            },
+        }
+    }
+
+    /// HGETALL key — alternating field, value
+    fn hgetall(&mut self, key: &str) -> Resp {
+        match self.live(key) {
+            None => Resp::Array(vec![]),
+            Some(e) => match &e.val {
+                StoreVal::Hash(h) => {
+                    let mut items = Vec::with_capacity(h.len() * 2);
+                    let mut pairs: Vec<_> = h.iter().collect();
+                    pairs.sort_by_key(|(k, _)| k.as_str()); // deterministic order
+                    for (f, v) in pairs {
+                        items.push(Resp::bulk(f.clone()));
+                        items.push(Resp::bulk(v.clone()));
+                    }
+                    Resp::Array(items)
+                }
+                _ => Resp::err("WRONGTYPE not a hash"),
+            },
+        }
+    }
+
+    /// HDEL key field [field ...]
+    fn hdel(&mut self, key: &str, fields: &[String]) -> Resp {
+        match self.live_mut(key) {
+            None => Resp::int(0),
+            Some(e) => match &mut e.val {
+                StoreVal::Hash(h) => {
+                    let removed = fields.iter().filter(|f| h.remove(f.as_str()).is_some()).count();
+                    Resp::int(removed as i64)
+                }
+                _ => Resp::err("WRONGTYPE not a hash"),
+            },
+        }
+    }
+
+    /// HLEN key
+    fn hlen(&mut self, key: &str) -> Resp {
+        match self.live(key) {
+            None => Resp::int(0),
+            Some(e) => match &e.val {
+                StoreVal::Hash(h) => Resp::int(h.len() as i64),
+                _ => Resp::err("WRONGTYPE not a hash"),
+            },
+        }
+    }
+
+    /// HEXISTS key field
+    fn hexists(&mut self, key: &str, field: &str) -> Resp {
+        match self.live(key) {
+            None => Resp::int(0),
+            Some(e) => match &e.val {
+                StoreVal::Hash(h) => Resp::int(h.contains_key(field) as i64),
+                _ => Resp::err("WRONGTYPE not a hash"),
+            },
+        }
+    }
+
+    /// HKEYS key
+    fn hkeys(&mut self, key: &str) -> Resp {
+        match self.live(key) {
+            None => Resp::Array(vec![]),
+            Some(e) => match &e.val {
+                StoreVal::Hash(h) => {
+                    let mut keys: Vec<_> = h.keys().cloned().collect();
+                    keys.sort();
+                    Resp::Array(keys.into_iter().map(Resp::bulk).collect())
+                }
+                _ => Resp::err("WRONGTYPE not a hash"),
+            },
+        }
+    }
+
+    /// HVALS key
+    fn hvals(&mut self, key: &str) -> Resp {
+        match self.live(key) {
+            None => Resp::Array(vec![]),
+            Some(e) => match &e.val {
+                StoreVal::Hash(h) => {
+                    let mut pairs: Vec<_> = h.iter().collect();
+                    pairs.sort_by_key(|(k, _)| k.as_str());
+                    Resp::Array(pairs.into_iter().map(|(_, v)| Resp::bulk(v.clone())).collect())
+                }
+                _ => Resp::err("WRONGTYPE not a hash"),
+            },
+        }
+    }
+
+    /// HINCRBY key field increment
+    fn hincrby(&mut self, key: &str, field: &str, by: i64) -> Resp {
+        let e = self.data.entry(key.to_string()).or_insert_with(Entry::hash);
+        if e.is_expired() { *e = Entry::hash(); }
+        match &mut e.val {
+            StoreVal::Hash(h) => {
+                let cur: i64 = h.get(field).and_then(|v| v.parse().ok()).unwrap_or(0);
+                let next = cur + by;
+                h.insert(field.to_string(), next.to_string());
+                Resp::int(next)
+            }
+            _ => Resp::err("WRONGTYPE not a hash"),
+        }
+    }
 }
 
 // ── Glob helper ───────────────────────────────────────────────────────────────
@@ -410,6 +576,31 @@ fn dispatch_inner(args: &[String], store: &mut Store) -> Result<Resp, Resp> {
         }
         "LLEN"   => { require(args, 2)?; store.llen(&args[1]) }
         "LINDEX" => { require(args, 3)?; store.lindex(&args[1], parse_i64(args.get(2))?) }
+
+        // ── Hash commands ──────────────────────────────────────────────────────
+        "HSET" => {
+            require_min(args, 4)?;
+            if (args.len() - 2) % 2 != 0 {
+                return Err(Resp::err("ERR wrong number of arguments for 'hset' command"));
+            }
+            let pairs: Vec<(String, String)> = args[2..].chunks(2)
+                .map(|c| (c[0].clone(), c[1].clone()))
+                .collect();
+            store.hset(&args[1], &pairs)
+        }
+        "HSETNX" => {
+            require(args, 4)?;
+            store.hsetnx(&args[1], &args[2], &args[3])
+        }
+        "HGET"    => { require(args, 3)?; store.hget(&args[1], &args[2]) }
+        "HMGET"   => { require_min(args, 3)?; store.hmget(&args[1], &args[2..].to_vec()) }
+        "HGETALL" => { require(args, 2)?; store.hgetall(&args[1]) }
+        "HDEL"    => { require_min(args, 3)?; store.hdel(&args[1], &args[2..].to_vec()) }
+        "HLEN"    => { require(args, 2)?; store.hlen(&args[1]) }
+        "HEXISTS" => { require(args, 3)?; store.hexists(&args[1], &args[2]) }
+        "HKEYS"   => { require(args, 2)?; store.hkeys(&args[1]) }
+        "HVALS"   => { require(args, 2)?; store.hvals(&args[1]) }
+        "HINCRBY" => { require(args, 4)?; store.hincrby(&args[1], &args[2], parse_i64(args.get(3))?) }
 
         _ => Resp::err(format!("ERR unknown command '{cmd}'")),
     })
@@ -600,5 +791,105 @@ mod tests {
         assert_ne!(s.addr.port(), 0);
         s.stop();
         h.join().unwrap();
+    }
+
+    // ── Hash tests ────────────────────────────────────────────────────────
+
+    #[test] fn hset_hget_basic() {
+        let mut s = st();
+        assert_eq!(s.hset("h", &[("f".into(), "v".into())]), Resp::int(1));
+        assert_eq!(s.hget("h", "f"), Resp::bulk("v"));
+        assert_eq!(s.hget("h", "missing"), Resp::null());
+    }
+
+    #[test] fn hset_multi_fields() {
+        let mut s = st();
+        let pairs = vec![("a".into(), "1".into()), ("b".into(), "2".into())];
+        assert_eq!(s.hset("h", &pairs), Resp::int(2));
+        // Overwrite doesn't count as new
+        let update = vec![("a".into(), "10".into()), ("c".into(), "3".into())];
+        assert_eq!(s.hset("h", &update), Resp::int(1)); // only c is new
+        assert_eq!(s.hget("h", "a"), Resp::bulk("10"));
+    }
+
+    #[test] fn hsetnx_only_if_missing() {
+        let mut s = st();
+        assert_eq!(s.hsetnx("h", "f", "first"),  Resp::int(1));
+        assert_eq!(s.hsetnx("h", "f", "second"), Resp::int(0));
+        assert_eq!(s.hget("h", "f"), Resp::bulk("first"));
+    }
+
+    #[test] fn hgetall_sorted() {
+        let mut s = st();
+        s.hset("h", &[("b".into(), "2".into()), ("a".into(), "1".into())]);
+        let r = s.hgetall("h");
+        assert_eq!(r, Resp::Array(vec![
+            Resp::bulk("a"), Resp::bulk("1"),
+            Resp::bulk("b"), Resp::bulk("2"),
+        ]));
+    }
+
+    #[test] fn hgetall_missing_key() {
+        assert_eq!(st().hgetall("nokey"), Resp::Array(vec![]));
+    }
+
+    #[test] fn hdel_fields() {
+        let mut s = st();
+        s.hset("h", &[("a".into(), "1".into()), ("b".into(), "2".into())]);
+        assert_eq!(s.hdel("h", &["a".into(), "z".into()]), Resp::int(1));
+        assert_eq!(s.hget("h", "a"), Resp::null());
+        assert_eq!(s.hget("h", "b"), Resp::bulk("2"));
+    }
+
+    #[test] fn hlen_count() {
+        let mut s = st();
+        assert_eq!(s.hlen("h"), Resp::int(0));
+        s.hset("h", &[("a".into(), "1".into()), ("b".into(), "2".into())]);
+        assert_eq!(s.hlen("h"), Resp::int(2));
+    }
+
+    #[test] fn hexists() {
+        let mut s = st();
+        s.hset("h", &[("f".into(), "v".into())]);
+        assert_eq!(s.hexists("h", "f"),       Resp::int(1));
+        assert_eq!(s.hexists("h", "missing"), Resp::int(0));
+        assert_eq!(s.hexists("none", "f"),    Resp::int(0));
+    }
+
+    #[test] fn hkeys_hvals() {
+        let mut s = st();
+        s.hset("h", &[("b".into(), "2".into()), ("a".into(), "1".into())]);
+        assert_eq!(s.hkeys("h"), Resp::Array(vec![Resp::bulk("a"), Resp::bulk("b")]));
+        assert_eq!(s.hvals("h"), Resp::Array(vec![Resp::bulk("1"), Resp::bulk("2")]));
+    }
+
+    #[test] fn hmget_partial() {
+        let mut s = st();
+        s.hset("h", &[("a".into(), "1".into())]);
+        let r = s.hmget("h", &["a".into(), "z".into()]);
+        assert_eq!(r, Resp::Array(vec![Resp::bulk("1"), Resp::null()]));
+    }
+
+    #[test] fn hincrby() {
+        let mut s = st();
+        assert_eq!(s.hincrby("h", "count",  5),  Resp::int(5));
+        assert_eq!(s.hincrby("h", "count",  3),  Resp::int(8));
+        assert_eq!(s.hincrby("h", "count", -2),  Resp::int(6));
+    }
+
+    #[test] fn hash_type_reported() {
+        let mut s = st();
+        s.hset("h", &[("f".into(), "v".into())]);
+        assert_eq!(s.type_cmd("h"), Resp::bulk("hash"));
+    }
+
+    #[test] fn dispatch_hset_hget() {
+        let mut s = st();
+        let set_args = vec!["HSET", "myhash", "field1", "value1"]
+            .into_iter().map(String::from).collect::<Vec<_>>();
+        assert_eq!(dispatch(&set_args, &mut s), Resp::int(1));
+        let get_args = vec!["HGET", "myhash", "field1"]
+            .into_iter().map(String::from).collect::<Vec<_>>();
+        assert_eq!(dispatch(&get_args, &mut s), Resp::bulk("value1"));
     }
 }
