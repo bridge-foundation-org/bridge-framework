@@ -247,6 +247,81 @@ fn exec(cmd: Command, state: SharedState) -> Response {
         }
         Command::MetricsClear => { g.metrics = Default::default(); Response::Ok("metrics cleared".into()) }
         Command::MetricsExport { format: _ } => Response::Data(g.metrics.to_json()),
+
+        // ── Pub/Sub ───────────────────────────────────────────────────────
+        Command::PubSubPublish { topic, payload } => {
+            let msg = crate::pubsub::Message::new(&topic, payload);
+            let seq = g.pubsub.publish(msg);
+            Response::Ok(format!("published seq={seq} topic={topic}"))
+        }
+        Command::PubSubSubscribe { topic, subscriber } => {
+            g.pubsub.subscribe(&topic, &subscriber, crate::pubsub::SubscriptionConfig::default());
+            Response::Ok(format!("subscribed {subscriber} to {topic}"))
+        }
+        Command::PubSubPull { topic, subscriber } => {
+            match g.pubsub.pull(&topic, &subscriber) {
+                Some(msg) => Response::Data(msg.to_json()),
+                None      => Response::Ok("no messages".into()),
+            }
+        }
+        Command::PubSubAck { msg_id } => {
+            if g.pubsub.ack(&msg_id) {
+                Response::Ok(format!("acked {msg_id}"))
+            } else {
+                Response::Err(format!("message '{msg_id}' not found"))
+            }
+        }
+        Command::PubSubNack { msg_id, reason } => {
+            g.pubsub.nack(&msg_id, &reason);
+            Response::Ok(format!("nacked {msg_id}"))
+        }
+        Command::PubSubStatus => Response::Data(g.pubsub.status_json()),
+
+        // ── Secrets ───────────────────────────────────────────────────────
+        Command::SecretSet { name, value } => {
+            g.secrets.register_inline(&name, &value);
+            Response::Ok(format!("secret '{name}' set"))
+        }
+        Command::SecretGet { name } => {
+            match g.secrets.get(&name) {
+                Some(_) => Response::Ok(format!("secret '{name}' is set")),
+                None    => Response::Err(format!("secret '{name}' not found")),
+            }
+        }
+        Command::SecretDelete { name } => {
+            if g.secrets.delete(&name) {
+                Response::Ok(format!("secret '{name}' deleted"))
+            } else {
+                Response::Err(format!("secret '{name}' not found"))
+            }
+        }
+        Command::SecretList   => Response::Data(g.secrets.list_json()),
+        Command::SecretCheck { names } => {
+            let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            let missing = g.secrets.check_required(&refs);
+            if missing.is_empty() {
+                Response::Ok("all secrets present".into())
+            } else {
+                Response::Err(format!("missing secrets: {}", missing.join(", ")))
+            }
+        }
+
+        // ── Streaming ─────────────────────────────────────────────────────
+        Command::StreamList   => Response::Data(g.streams.endpoints_json()),
+        Command::StreamStatus => {
+            let active = g.streams.active_count();
+            Response::Data(format!(r#"{{"active_streams":{active}}}"#))
+        }
+        Command::StreamOpen { path } => {
+            match g.streams.open(&path) {
+                Some(id) => { g.streams.set_open(&id); Response::Ok(format!("stream opened id={id}")) }
+                None     => Response::Err(format!("no stream endpoint at '{path}'")),
+            }
+        }
+        Command::StreamClose { id } => {
+            g.streams.close(&id);
+            Response::Ok(format!("stream {id} closed"))
+        }
     }
 }
 

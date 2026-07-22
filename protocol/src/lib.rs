@@ -199,6 +199,27 @@ pub enum Command {
     MetricsGet { name: String },
     MetricsClear,
     MetricsExport { format: ExportFormat },
+
+    // ── Pub/Sub ──────────────────────────────────────────────────────────────
+    PubSubPublish { topic: String, payload: String },
+    PubSubSubscribe { topic: String, subscriber: String },
+    PubSubPull { topic: String, subscriber: String },
+    PubSubAck { msg_id: String },
+    PubSubNack { msg_id: String, reason: String },
+    PubSubStatus,
+
+    // ── Secrets ──────────────────────────────────────────────────────────────
+    SecretSet { name: String, value: String },
+    SecretGet { name: String },
+    SecretDelete { name: String },
+    SecretList,
+    SecretCheck { names: Vec<String> },
+
+    // ── Streaming endpoints ───────────────────────────────────────────────────
+    StreamList,
+    StreamOpen { path: String },
+    StreamClose { id: String },
+    StreamStatus,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -681,6 +702,67 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             let format_str = parts.next().unwrap_or("json");
             let format = ExportFormat::parse(format_str)?;
             Ok(Command::MetricsExport { format })
+        }
+
+        // ── Pub/Sub ───────────────────────────────────────────────────────────
+        "PUBSUB-PUBLISH" => {
+            let topic   = parts.next().ok_or("PUBSUB-PUBLISH requires topic")?.to_string();
+            let payload = parts.collect::<Vec<_>>().join(" ");
+            let payload = if payload.is_empty() { payload } else { percent_decode(&payload)? };
+            Ok(Command::PubSubPublish { topic, payload })
+        }
+        "PUBSUB-SUBSCRIBE" => {
+            let topic      = parts.next().ok_or("PUBSUB-SUBSCRIBE requires topic")?.to_string();
+            let subscriber = parts.next().ok_or("PUBSUB-SUBSCRIBE requires subscriber")?.to_string();
+            Ok(Command::PubSubSubscribe { topic, subscriber })
+        }
+        "PUBSUB-PULL" => {
+            let topic      = parts.next().ok_or("PUBSUB-PULL requires topic")?.to_string();
+            let subscriber = parts.next().ok_or("PUBSUB-PULL requires subscriber")?.to_string();
+            Ok(Command::PubSubPull { topic, subscriber })
+        }
+        "PUBSUB-ACK" => {
+            let msg_id = parts.next().ok_or("PUBSUB-ACK requires msg_id")?.to_string();
+            Ok(Command::PubSubAck { msg_id })
+        }
+        "PUBSUB-NACK" => {
+            let msg_id = parts.next().ok_or("PUBSUB-NACK requires msg_id")?.to_string();
+            let reason = parts.collect::<Vec<_>>().join(" ");
+            Ok(Command::PubSubNack { msg_id, reason })
+        }
+        "PUBSUB-STATUS" => Ok(Command::PubSubStatus),
+
+        // ── Secrets ───────────────────────────────────────────────────────────
+        "SECRET-SET" => {
+            let name  = parts.next().ok_or("SECRET-SET requires name")?.to_string();
+            let value = parts.collect::<Vec<_>>().join(" ");
+            let value = percent_decode(&value)?;
+            Ok(Command::SecretSet { name, value })
+        }
+        "SECRET-GET" => {
+            let name = parts.next().ok_or("SECRET-GET requires name")?.to_string();
+            Ok(Command::SecretGet { name })
+        }
+        "SECRET-DELETE" => {
+            let name = parts.next().ok_or("SECRET-DELETE requires name")?.to_string();
+            Ok(Command::SecretDelete { name })
+        }
+        "SECRET-LIST" => Ok(Command::SecretList),
+        "SECRET-CHECK" => {
+            let names: Vec<String> = parts.map(|s| s.to_string()).collect();
+            Ok(Command::SecretCheck { names })
+        }
+
+        // ── Streaming ─────────────────────────────────────────────────────────
+        "STREAM-LIST"   => Ok(Command::StreamList),
+        "STREAM-STATUS" => Ok(Command::StreamStatus),
+        "STREAM-OPEN"   => {
+            let path = parts.next().ok_or("STREAM-OPEN requires path")?.to_string();
+            Ok(Command::StreamOpen { path })
+        }
+        "STREAM-CLOSE"  => {
+            let id = parts.next().ok_or("STREAM-CLOSE requires id")?.to_string();
+            Ok(Command::StreamClose { id })
         }
 
         unknown => Err(format!("unknown command: {unknown}")),

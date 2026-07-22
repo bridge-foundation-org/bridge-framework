@@ -7,9 +7,16 @@
 //!
 //! All three share the same `Arc<Mutex<State>>`.
 
+mod auth;
+mod errors;
 mod http;
+mod logger;
+mod metrics;
+mod pubsub;
+mod secrets;
 mod sqldb;
 mod state;
+mod streaming;
 mod tcp;
 
 use std::sync::{Arc, Mutex};

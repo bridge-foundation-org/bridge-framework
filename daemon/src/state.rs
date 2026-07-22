@@ -11,6 +11,11 @@ use compiler::BridgeFile;
 use db::Db;
 use protocol::DaemonMode;
 
+use crate::metrics::Registry as MetricsRegistry;
+use crate::pubsub::Broker;
+use crate::secrets::SecretsRegistry;
+use crate::streaming::StreamRegistry;
+
 // ── Trace entry ───────────────────────────────────────────────────────────────
 
 /// A single recorded request trace.
@@ -139,8 +144,10 @@ pub struct State {
     pub service_registry:  Option<BridgeFile>,
     /// Recent request traces (capped at MAX_TRACES).
     pub traces:            Vec<TraceEntry>,
-    /// In-memory metrics.
+    /// In-memory metrics (legacy simple counters).
     pub metrics:           Metrics,
+    /// Full metrics registry with Prometheus support.
+    pub metric_registry:   MetricsRegistry,
     /// Recent log entries (capped at MAX_LOGS).
     pub logs:              Vec<LogEntry>,
     /// Miniredis address.
@@ -152,6 +159,12 @@ pub struct State {
     /// App metadata
     pub app_name:          String,
     pub app_version:       String,
+    /// Pub/Sub broker.
+    pub pubsub:            Broker,
+    /// Secrets registry.
+    pub secrets:           SecretsRegistry,
+    /// Streaming endpoints registry.
+    pub streams:           StreamRegistry,
     /// Monotonically increasing trace ID counter.
     trace_counter:         u64,
     /// RNG state for sampling (simple LCG).
@@ -163,6 +176,8 @@ const MAX_LOGS:   usize = 1000;
 
 impl State {
     pub fn new(redis_addr: Option<String>, redis_connections: Option<Arc<AtomicUsize>>) -> Self {
+        let metric_registry = MetricsRegistry::new();
+        crate::metrics::register_defaults(&metric_registry);
         Self {
             mode:              DaemonMode::Full,
             store:             Db::new(),
@@ -170,12 +185,16 @@ impl State {
             service_registry:  None,
             traces:            Vec::new(),
             metrics:           Metrics::default(),
+            metric_registry,
             logs:              Vec::new(),
             redis_addr,
             redis_connections,
             trace_sample_rate: 1.0,
             app_name:          "bridge".to_string(),
             app_version:       protocol::VERSION.to_string(),
+            pubsub:            Broker::new(),
+            secrets:           SecretsRegistry::new(),
+            streams:           StreamRegistry::new(),
             trace_counter:     0,
             rng_state:         12345678901234567,
         }
