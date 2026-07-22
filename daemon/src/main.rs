@@ -12,7 +12,6 @@ mod sqldb;
 mod state;
 mod tcp;
 
-use std::env;
 use std::sync::{Arc, Mutex};
 use std::thread;
 

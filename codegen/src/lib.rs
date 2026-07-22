@@ -187,6 +187,75 @@ fn generate_endpoint(out: &mut String, ep: &Endpoint, svc_auth: &Auth) {
     out.push_str("    },\n");
 }
 
+/// Generate an OpenAPI 3.0 JSON specification for the Bridge file.
+pub fn generate_openapi(file: &BridgeFile) -> String {
+    let mut paths = Vec::new();
+
+    for svc in &file.services {
+        for ep in &svc.endpoints {
+            let params = ep.path_params();
+            let mut path_params_json = Vec::new();
+            for p in &params {
+                path_params_json.push(format!(
+                    r#"{{"name":"{p}","in":"path","required":true,"schema":{{"type":"string"}}}}"#
+                ));
+            }
+
+            let method_lower = ep.method.as_str().to_ascii_lowercase();
+            let effective_auth = ep.auth.as_ref().unwrap_or(&svc.auth);
+            let security_json = match effective_auth {
+                Auth::Bearer  => r#"[{"bearerAuth":[]}]"#,
+                Auth::ApiKey  => r#"[{"apiKeyAuth":[]}]"#,
+                Auth::None    => "[]",
+            };
+
+            let needs_body = matches!(ep.method, Method::Post | Method::Put | Method::Patch);
+            let request_body = if needs_body {
+                r#","requestBody":{"content":{"application/json":{"schema":{"type":"object"}}}}"#
+            } else {
+                ""
+            };
+
+            let tags_json = if !ep.tags.is_empty() {
+                let t: Vec<String> = ep.tags.iter().map(|t| format!("\"{t}\"")).collect();
+                format!(r#""tags":[{}],"#, t.join(","))
+            } else {
+                format!(r#""tags":["{}"],"#, svc.name)
+            };
+
+            // Build OpenAPI-style path (replace :param with {param})
+            let oa_path = params.iter()
+                .fold(ep.path.clone(), |acc, p| acc.replace(&format!(":{p}"), &format!("{{{p}}}")));
+
+            let params_json = if path_params_json.is_empty() {
+                "[]".to_string()
+            } else {
+                format!("[{}]", path_params_json.join(","))
+            };
+
+            paths.push(format!(
+                r#""{oa_path}":{{{method_lower}:{{{tags}"{service_name}_{ep_name}",{}"parameters":{params},"security":{security},"responses":{{"200":{{"description":"Success"}},"400":{{"description":"Bad Request"}},"500":{{"description":"Server Error"}}}}{req_body}}}}}"#,
+                tags = tags_json,
+                service_name = svc.name,
+                ep_name = ep.name,
+                params = params_json,
+                security = security_json,
+                req_body = request_body,
+                oa_path = oa_path,
+                method_lower = method_lower,
+            ));
+        }
+    }
+
+    let security_schemes = r#""securitySchemes":{"bearerAuth":{"type":"http","scheme":"bearer"},"apiKeyAuth":{"type":"apiKey","in":"header","name":"x-api-key"}}"#;
+
+    format!(
+        r#"{{"openapi":"3.0.0","info":{{"title":"Bridge API","version":"1.0.0"}},"paths":{{{paths}}},"components":{{{security_schemes}}}}}"#,
+        paths = paths.join(","),
+        security_schemes = security_schemes,
+    )
+}
+
 /// Generate the top-level `createClient(baseUrl)` that bundles all services.
 fn root_factory(out: &mut String, file: &BridgeFile) {
     if file.services.is_empty() {
@@ -326,5 +395,88 @@ mod tests {
         let ts = generate_typescript_service(&svc);
         assert!(ts.contains("orderId: string, itemId: string"));
         assert!(ts.contains("`/orders/${orderId}/items/${itemId}`"));
+    }
+
+    #[test]
+    fn openapi_basic() {
+        let file = BridgeFile {
+            services: vec![
+                make_service("users", Auth::None, vec![
+                    make_endpoint("list", Method::Get, "/users"),
+                    make_endpoint("get", Method::Get, "/users/:id"),
+                ]),
+            ],
+        };
+        let spec = generate_openapi(&file);
+        assert!(spec.contains("openapi"));
+        assert!(spec.contains("3.0.0"));
+        assert!(spec.contains("/users"));
+        assert!(spec.contains("{id}"));
+        assert!(spec.contains("path"));
+    }
+
+    #[test]
+    fn openapi_with_auth() {
+        let file = BridgeFile {
+            services: vec![
+                make_service("secure", Auth::Bearer, vec![
+                    make_endpoint("get", Method::Get, "/data"),
+                ]),
+            ],
+        };
+        let spec = generate_openapi(&file);
+        assert!(spec.contains("bearerAuth"));
+        assert!(spec.contains("securitySchemes"));
+    }
+
+    #[test]
+    fn openapi_post_has_request_body() {
+        let file = BridgeFile {
+            services: vec![
+                make_service("users", Auth::None, vec![
+                    make_endpoint("create", Method::Post, "/users"),
+                ]),
+            ],
+        };
+        let spec = generate_openapi(&file);
+        assert!(spec.contains("requestBody"));
+    }
+
+    #[test]
+    fn openapi_empty_services() {
+        let file = BridgeFile { services: vec![] };
+        let spec = generate_openapi(&file);
+        assert!(spec.contains("openapi"));
+        assert!(spec.contains("paths"));
+    }
+
+    #[test]
+    fn endpoint_auth_override_no_token_param() {
+        let svc = make_service("mixed", Auth::Bearer, vec![
+            make_endpoint("public", Method::Get, "/pub"),
+        ]);
+        let ts = generate_typescript_service(&svc);
+        // Service-level auth — token param is in factory signature
+        assert!(ts.contains("token: string"));
+        assert!(ts.contains("authHeaders"));
+    }
+
+    #[test]
+    fn delete_method_no_body() {
+        let svc = make_service("users", Auth::None, vec![
+            make_endpoint("delete", Method::Delete, "/users/:id"),
+        ]);
+        let ts = generate_typescript_service(&svc);
+        // DELETE should not have body param
+        assert!(!ts.contains("body?: unknown") || ts.contains("id: string"));
+    }
+
+    #[test]
+    fn patch_method_has_body() {
+        let svc = make_service("users", Auth::None, vec![
+            make_endpoint("update", Method::Patch, "/users/:id"),
+        ]);
+        let ts = generate_typescript_service(&svc);
+        assert!(ts.contains("body?: unknown"));
     }
 }

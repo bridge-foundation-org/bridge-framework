@@ -253,7 +253,9 @@ impl Store {
         let e = self.data.entry(key).or_insert_with(Entry::list);
         match &mut e.val {
             StoreVal::List(list) => {
-                for v in vals.iter().rev() { list.insert(0, v.clone()); }
+                // Redis LPUSH: each element is inserted at head in order,
+                // so the last element in vals ends up at the front.
+                for v in vals.iter() { list.insert(0, v.clone()); }
                 Resp::int(list.len() as i64)
             }
             _ => Resp::err("WRONGTYPE not a list"),

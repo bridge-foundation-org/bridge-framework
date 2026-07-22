@@ -356,8 +356,154 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
 
     let mut parts = trimmed.split_whitespace();
     let cmd = parts.next().ok_or("missing command")?;
+    let cmd_upper = cmd.to_uppercase();
 
-    match cmd.to_uppercase().as_str() {
+    // Check for compound commands (space-separated format like "MODE GET", "DB PUT")
+    if let Some(second) = parts.clone().next() {
+        let second_upper = second.to_uppercase();
+        let compound = format!("{} {}", cmd_upper, second_upper);
+        
+        match compound.as_str() {
+            "MODE GET" => { parts.next(); return Ok(Command::GetMode); }
+            "MODE SET" => { 
+                parts.next(); // consume "SET"
+                let mode_str = parts.next().ok_or("MODE SET requires mode argument")?;
+                let mode = DaemonMode::parse(mode_str)?;
+                return Ok(Command::SetMode(mode));
+            }
+            "DB PUT" => {
+                parts.next(); // consume "PUT"
+                let ns = parts.next().ok_or("DB PUT requires namespace")?.to_string();
+                let key = parts.next().ok_or("DB PUT requires key")?.to_string();
+                let value = parts.collect::<Vec<_>>().join(" ");
+                let decoded = percent_decode(&value)?;
+                return Ok(Command::DbPut { ns, key, value: decoded });
+            }
+            "DB GET" => {
+                parts.next();
+                let ns = parts.next().ok_or("DB GET requires namespace")?.to_string();
+                let key = parts.next().ok_or("DB GET requires key")?.to_string();
+                return Ok(Command::DbGet { ns, key });
+            }
+            "DB DEL" => {
+                parts.next();
+                let ns = parts.next().ok_or("DB DEL requires namespace")?.to_string();
+                let key = parts.next().ok_or("DB DEL requires key")?.to_string();
+                return Ok(Command::DbDel { ns, key });
+            }
+            "DB KEYS" => {
+                parts.next();
+                let ns = parts.next().ok_or("DB KEYS requires namespace")?.to_string();
+                return Ok(Command::DbKeys { ns });
+            }
+            "DB FLUSH" => {
+                parts.next();
+                let ns = parts.next().ok_or("DB FLUSH requires namespace")?.to_string();
+                return Ok(Command::DbFlush { ns });
+            }
+            "AUTH STATUS" => { parts.next(); return Ok(Command::AuthStatus); }
+            "AUTH SET" => {
+                parts.next(); // consume "SET"
+                let token = parts.collect::<Vec<_>>().join(" ");
+                let decoded = percent_decode(&token)?;
+                // Single argument = token with Bearer scheme (backward compat)
+                return Ok(Command::AuthSet { scheme: AuthScheme::Bearer, token: decoded });
+            }
+            "AUTH CLEAR" => { parts.next(); return Ok(Command::AuthClear); }
+            "TRACE LIST" => { parts.next(); return Ok(Command::TraceList { limit: None, filter: None }); }
+            "TRACE GET" => {
+                parts.next();
+                let id = parts.next().ok_or("TRACE GET requires trace ID")?.to_string();
+                return Ok(Command::TraceGet { id });
+            }
+            "TRACE CLEAR" => { parts.next(); return Ok(Command::TraceClear); }
+            "TRACE EXPORT" => {
+                parts.next();
+                let format_str = parts.next().unwrap_or("json");
+                let format = ExportFormat::parse(format_str)?;
+                return Ok(Command::TraceExport { format });
+            }
+            "METRICS LIST" => { parts.next(); return Ok(Command::MetricsList); }
+            "METRICS GET" => {
+                parts.next();
+                let name = parts.next().ok_or("METRICS GET requires metric name")?.to_string();
+                return Ok(Command::MetricsGet { name });
+            }
+            "METRICS CLEAR" => { parts.next(); return Ok(Command::MetricsClear); }
+            "METRICS EXPORT" => {
+                parts.next();
+                let format_str = parts.next().unwrap_or("json");
+                let format = ExportFormat::parse(format_str)?;
+                return Ok(Command::MetricsExport { format });
+            }
+            "SERVICES LIST" => { parts.next(); return Ok(Command::ServicesList); }
+            "ROUTES LIST" => { parts.next(); return Ok(Command::RoutesList); }
+            "COMPILE FILE" => {
+                parts.next();
+                let path = parts.next().ok_or("COMPILE FILE requires path")?.to_string();
+                return Ok(Command::CompileFile { path });
+            }
+            "PG CREATE" => {
+                parts.next();
+                let name = parts.next().ok_or("PG CREATE requires name")?.to_string();
+                return Ok(Command::PgCreate { name });
+            }
+            "PG STATUS" => { parts.next(); return Ok(Command::PgStatus); }
+            "PG MIGRATE" => {
+                parts.next();
+                let sql = parts.collect::<Vec<_>>().join(" ");
+                let decoded = percent_decode(&sql)?;
+                return Ok(Command::PgMigrate { sql: decoded });
+            }
+            "PG DESTROY" => {
+                parts.next();
+                let name = parts.next().ok_or("PG DESTROY requires name")?.to_string();
+                return Ok(Command::PgDestroy { name });
+            }
+            "REDIS STATUS" => { parts.next(); return Ok(Command::RedisStatus); }
+            "REDIS PING" => { parts.next(); return Ok(Command::RedisPing); }
+            "REDIS GET" => {
+                parts.next();
+                let key = parts.next().ok_or("REDIS GET requires key")?.to_string();
+                return Ok(Command::RedisGet { key });
+            }
+            "REDIS SET" => {
+                parts.next();
+                let key = parts.next().ok_or("REDIS SET requires key")?.to_string();
+                let value = parts.collect::<Vec<_>>().join(" ");
+                let decoded = percent_decode(&value)?;
+                return Ok(Command::RedisSet { key, value: decoded });
+            }
+            "REDIS DEL" => {
+                parts.next();
+                let key = parts.next().ok_or("REDIS DEL requires key")?.to_string();
+                return Ok(Command::RedisDel { key });
+            }
+            "REDIS KEYS" => {
+                parts.next();
+                let pattern = parts.next().unwrap_or("*").to_string();
+                return Ok(Command::RedisKeys { pattern });
+            }
+            "REDIS TTL" => {
+                parts.next();
+                let key = parts.next().ok_or("REDIS TTL requires key")?.to_string();
+                return Ok(Command::RedisTtl { key });
+            }
+            "REDIS EXPIRE" => {
+                parts.next();
+                let key = parts.next().ok_or("REDIS EXPIRE requires key")?.to_string();
+                let seconds_str = parts.next().ok_or("REDIS EXPIRE requires seconds")?;
+                let seconds = seconds_str.parse::<u64>()
+                    .map_err(|_| format!("invalid seconds: {seconds_str}"))?;
+                return Ok(Command::RedisExpire { key, seconds });
+            }
+            "REDIS FLUSH" => { parts.next(); return Ok(Command::RedisFlush); }
+            _ => {}
+        }
+    }
+
+    // Now handle hyphenated format
+    match cmd_upper.as_str() {
         "PING" => Ok(Command::Ping),
         "HELP" => Ok(Command::Help),
         "STOP" => Ok(Command::Stop),
@@ -486,11 +632,20 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         "AUTH-STATUS" => Ok(Command::AuthStatus),
 
         "AUTH-SET" => {
-            let scheme_str = parts.next().ok_or("AUTH-SET requires scheme (bearer|api_key)")?;
-            let scheme = AuthScheme::parse(scheme_str)?;
-            let token = parts.collect::<Vec<_>>().join(" ");
-            let decoded = percent_decode(&token)?;
-            Ok(Command::AuthSet { scheme, token: decoded })
+            let first = parts.next().ok_or("AUTH-SET requires token or scheme")?;
+            // If there are more tokens, first is a scheme; otherwise treat as token (Bearer default)
+            let rest: Vec<_> = parts.collect();
+            if rest.is_empty() {
+                // Single arg: treat as token with Bearer scheme
+                let decoded = percent_decode(first)?;
+                Ok(Command::AuthSet { scheme: AuthScheme::Bearer, token: decoded })
+            } else {
+                // first is scheme, rest is token
+                let scheme = AuthScheme::parse(first)?;
+                let token = rest.join(" ");
+                let decoded = percent_decode(&token)?;
+                Ok(Command::AuthSet { scheme, token: decoded })
+            }
         }
 
         "AUTH-CLEAR" => Ok(Command::AuthClear),

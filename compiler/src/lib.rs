@@ -159,8 +159,8 @@ pub fn parse(source: &str) -> Result<BridgeFile, String> {
 
     for (lineno, raw) in source.lines().enumerate() {
         let line = raw.trim();
-        // skip blanks and comments
-        if line.is_empty() || line.starts_with('#') {
+        // skip blanks and comments (# or // style)
+        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
             continue;
         }
 
@@ -258,6 +258,14 @@ pub fn parse(source: &str) -> Result<BridgeFile, String> {
 
     if file.services.is_empty() {
         return Err("no services found — file must contain at least one 'service' block".to_string());
+    }
+
+    // Check for duplicate service names
+    let mut seen_services = std::collections::HashSet::new();
+    for svc in &file.services {
+        if !seen_services.insert(&svc.name) {
+            return Err(format!("duplicate service name '{}'", svc.name));
+        }
     }
 
     Ok(file)
@@ -433,5 +441,95 @@ mod tests {
             let src = format!("service s\nendpoint ep {m} /path\n");
             assert!(compile(&src).is_ok(), "method {m} should be valid");
         }
+    }
+
+    #[test]
+    fn double_slash_comments_ignored() {
+        let src = "// header comment\nservice hello\n// another comment\nendpoint ping GET /ping\n";
+        let svc = compile(src).unwrap();
+        assert_eq!(svc.name, "hello");
+        assert_eq!(svc.endpoints.len(), 1);
+    }
+
+    #[test]
+    fn mixed_comment_styles() {
+        let src = "# hash comment\n// slash comment\nservice svc\n# ep comment\nendpoint ep GET /path\n";
+        let svc = compile(src).unwrap();
+        assert_eq!(svc.name, "svc");
+    }
+
+    #[test]
+    fn duplicate_service_name_errors() {
+        let src = "service a\nendpoint p GET /p\nservice a\nendpoint q POST /q\n";
+        assert!(parse(src).is_err());
+    }
+
+    #[test]
+    fn unknown_keyword_errors() {
+        assert!(compile("service s\nunknown keyword\nendpoint p GET /p\n").is_err());
+    }
+
+    #[test]
+    fn endpoint_outside_service_errors() {
+        assert!(parse("endpoint p GET /p\n").is_err());
+    }
+
+    #[test]
+    fn auth_outside_service_errors() {
+        assert!(parse("auth bearer\nservice s\nendpoint p GET /p\n").is_err());
+    }
+
+    #[test]
+    fn middleware_outside_service_errors() {
+        assert!(parse("middleware logger\nservice s\nendpoint p GET /p\n").is_err());
+    }
+
+    #[test]
+    fn path_params_multiple() {
+        let src = "service api\nendpoint detail GET /a/:x/b/:y/c/:z\n";
+        let svc = compile(src).unwrap();
+        assert_eq!(svc.endpoints[0].path_params(), vec!["x", "y", "z"]);
+    }
+
+    #[test]
+    fn endpoint_with_auth_and_tags() {
+        let src = "service svc\nauth bearer\nendpoint ep GET /path auth=api_key tags=v1,beta\n";
+        let svc = compile(src).unwrap();
+        assert_eq!(svc.auth, Auth::Bearer);
+        assert_eq!(svc.endpoints[0].auth, Some(Auth::ApiKey));
+        assert_eq!(svc.endpoints[0].tags, vec!["v1", "beta"]);
+    }
+
+    #[test]
+    fn invalid_auth_scheme_errors() {
+        assert!(compile("service s\nauth invalid\nendpoint p GET /p\n").is_err());
+    }
+
+    #[test]
+    fn invalid_method_errors() {
+        assert!(compile("service s\nendpoint p INVALID /p\n").is_err());
+    }
+
+    #[test]
+    fn endpoint_path_must_start_with_slash() {
+        assert!(compile("service s\nendpoint p GET noslash\n").is_err());
+    }
+
+    #[test]
+    fn service_must_have_name() {
+        assert!(compile("service\nendpoint p GET /p\n").is_err());
+    }
+
+    #[test]
+    fn middleware_list_multiple() {
+        let src = "service s\nmiddleware auth rate_limit cors\nendpoint p GET /p\n";
+        let svc = compile(src).unwrap();
+        assert_eq!(svc.middleware, vec!["auth", "rate_limit", "cors"]);
+    }
+
+    #[test]
+    fn compile_single_service_from_multi_fails() {
+        let src = "service a\nendpoint p GET /p\nservice b\nendpoint q POST /q\n";
+        assert!(compile(src).is_err()); // compile() only accepts single service
     }
 }

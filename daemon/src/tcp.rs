@@ -8,7 +8,9 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[allow(unused_imports)]
+use std::sync::Mutex;
 use std::thread;
 
 use protocol::{Command, Response, parse_command};
@@ -58,7 +60,7 @@ fn exec(cmd: Command, state: SharedState) -> Response {
         // ── Core ──────────────────────────────────────────────────────────
         Command::Ping    => Response::Pong,
         Command::Version => Response::Data(protocol::VERSION.to_string()),
-        Command::Health  => Response::Data(health_json(&g)),
+        Command::Health  => Response::Data(g.health_json()),
         Command::Help    => Response::Data(HELP_TEXT.to_string()),
         Command::Stop    => {
             g.mode = protocol::DaemonMode::Off;
@@ -81,7 +83,7 @@ fn exec(cmd: Command, state: SharedState) -> Response {
             None    => Response::Err("no services compiled yet — run COMPILE first".into()),
             Some(f) => {
                 let names: Vec<String> = f.services.iter().map(|s| format!(r#""{}""#, s.name)).collect();
-                Response::Data(format!("[{}]", names.join(",")))
+                Response::Ok(format!("[{}]", names.join(",")))
             }
         },
         Command::RoutesList => match &g.service_registry {
@@ -96,7 +98,7 @@ fn exec(cmd: Command, state: SharedState) -> Response {
                         ));
                     }
                 }
-                Response::Data(format!("[{}]", routes.join(",")))
+                Response::Ok(format!("[{}]", routes.join(",")))
             }
         },
 
@@ -210,7 +212,7 @@ fn exec(cmd: Command, state: SharedState) -> Response {
         // ── Auth ──────────────────────────────────────────────────────────
         Command::AuthStatus => {
             let set = g.auth_token.is_some();
-            Response::Data(format!(r#"{{"configured":{set}}}"#))
+            Response::Ok(format!(r#"{{"configured":{set}}}"#))
         }
         Command::AuthSet { scheme, token } => { 
             g.auth_token = Some(token); 
@@ -224,7 +226,7 @@ fn exec(cmd: Command, state: SharedState) -> Response {
                 .take(limit.unwrap_or(usize::MAX))
                 .map(|t| t.to_json())
                 .collect();
-            Response::Data(format!("[{}]", traces.join(",")))
+            Response::Ok(format!("[{}]", traces.join(",")))
         }
         Command::TraceGet { id } => match g.find_trace(&id) {
             Some(t) => Response::Data(t.to_json()),
@@ -232,19 +234,19 @@ fn exec(cmd: Command, state: SharedState) -> Response {
         },
         Command::TraceClear => { g.traces.clear(); Response::Ok("traces cleared".into()) }
 
-        // ── Metrics (stub implementations) ───────────────────────────────────
-        Command::TraceExport { format: _ } => Response::Err("trace export not yet implemented".into()),
-        Command::MetricsList => Response::List(vec![]),
-        Command::MetricsGet { name: _ } => Response::Err("metrics not yet implemented".into()),
-        Command::MetricsClear => Response::Ok("metrics cleared (stub)".into()),
-        Command::MetricsExport { format: _ } => Response::Err("metrics export not yet implemented".into()),
-
-        // ── Metrics (stub implementations) ───────────────────────────────────
-        Command::TraceExport { format: _ } => Response::Err("trace export not yet implemented".into()),
-        Command::MetricsList => Response::List(vec![]),
-        Command::MetricsGet { name: _ } => Response::Err("metrics not yet implemented".into()),
-        Command::MetricsClear => Response::Ok("metrics cleared (stub)".into()),
-        Command::MetricsExport { format: _ } => Response::Err("metrics export not yet implemented".into()),
+        // ── Metrics ───────────────────────────────────────────────────────────
+        Command::TraceExport { format: _ } => {
+            let json: Vec<String> = g.traces.iter().map(|t| t.to_json()).collect();
+            Response::Data(format!("[{}]", json.join(",")))
+        }
+        Command::MetricsList => Response::Data(g.metrics.to_json()),
+        Command::MetricsGet { name } => {
+            let count = g.metrics.request_counts.get(&name).copied().unwrap_or(0);
+            let errs  = g.metrics.error_counts.get(&name).copied().unwrap_or(0);
+            Response::Data(format!(r#"{{"endpoint":"{name}","requests":{count},"errors":{errs}}}"#))
+        }
+        Command::MetricsClear => { g.metrics = Default::default(); Response::Ok("metrics cleared".into()) }
+        Command::MetricsExport { format: _ } => Response::Data(g.metrics.to_json()),
     }
 }
 
@@ -302,30 +304,22 @@ fn pg_result(r: Result<String, String>) -> Response {
     }
 }
 
-fn health_json(g: &State) -> String {
-    let redis  = g.redis_addr.as_deref().unwrap_or("off");
-    let conns  = g.redis_connections_count();
-    let svcs   = g.service_registry.as_ref().map(|f| f.services.len()).unwrap_or(0);
-    let traces = g.traces.len();
-    format!(
-        r#"{{"status":"ok","mode":"{}","redis":"{}","redis_connections":{},"services":{},"traces":{}}}"#,
-        g.mode, redis, conns, svcs, traces
-    )
-}
-
 const HELP_TEXT: &str = "\
-PING | VERSION | HEALTH | STOP\n\
-MODE GET | MODE SET <lite|full|ultra|off>\n\
-COMPILE <source> | COMPILE FILE <path>\n\
-SERVICES LIST | ROUTES LIST\n\
-DB PUT <ns> <key> <value> | DB GET <ns> <key> | DB DEL <ns> <key>\n\
-DB KEYS <ns> | DB FLUSH <ns>\n\
-PG CREATE <name> | PG STATUS | PG MIGRATE <sql> | PG DESTROY <name>\n\
-REDIS STATUS | REDIS PING | REDIS GET <k> | REDIS SET <k> <v>\n\
-REDIS SET_EX <k> <secs> <v> | REDIS DEL <k> | REDIS KEYS <pat>\n\
-REDIS TTL <k> | REDIS EXPIRE <k> <secs> | REDIS FLUSH\n\
-AUTH STATUS | AUTH SET <token> | AUTH CLEAR\n\
-TRACE LIST | TRACE GET <id> | TRACE CLEAR";
+Bridge Framework daemon commands:\n\
+\n\
+  Core commands: PING | VERSION | HEALTH | STOP\n\
+  Mode commands: MODE GET | MODE SET <lite|full|ultra|off>\n\
+  Compiler: COMPILE <source> | COMPILE FILE <path>\n\
+  Services: SERVICES LIST | ROUTES LIST\n\
+  KV Store: DB PUT <ns> <key> <value> | DB GET <ns> <key> | DB DEL <ns> <key>\n\
+           DB KEYS <ns> | DB FLUSH <ns>\n\
+  Postgres: PG CREATE <name> | PG STATUS | PG MIGRATE <sql> | PG DESTROY <name>\n\
+  Redis:    REDIS STATUS | REDIS PING | REDIS GET <k> | REDIS SET <k> <v>\n\
+           REDIS SETEX <k> <secs> <v> | REDIS DEL <k> | REDIS KEYS <pat>\n\
+           REDIS TTL <k> | REDIS EXPIRE <k> <secs> | REDIS FLUSH\n\
+  Auth:     AUTH STATUS | AUTH SET <scheme> <token> | AUTH CLEAR\n\
+  Traces:   TRACE LIST [limit] | TRACE GET <id> | TRACE CLEAR | TRACE EXPORT <fmt>\n\
+  Metrics:  METRICS LIST | METRICS GET <name> | METRICS CLEAR | METRICS EXPORT <fmt>";
 
 // ── Unit tests (no network) ───────────────────────────────────────────────────
 
@@ -399,6 +393,6 @@ mod tests {
         assert!(r.contains("GET"), "got: {r}");
         process("TRACE CLEAR", Arc::clone(&s));
         let r2 = process("TRACE LIST", Arc::clone(&s));
-        assert!(r2.contains("[]") || r2.contains("DATA []"), "got: {r2}");
+        assert!(r2.contains("[]") || r2.contains("OK []") || r2.contains("DATA []"), "got: {r2}");
     }
 }

@@ -9,6 +9,7 @@ members = [
     "daemon",
     "cli",
     "e2e-tests",
+    "scripts/analyze-commits",
 ]
 
 [workspace.package]

@@ -1,0 +1,12 @@
+[package]
+name = "analyze-commits"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "analyze-commits"
+path = "src/main.rs"
+
+[dependencies]
+# Using only std - no external dependencies for parsing JSON
+# We'll implement a minimal JSON parser or use std::fs for reading

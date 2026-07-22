@@ -9,7 +9,7 @@
 //! # Example
 //!
 //! ```rust
-//! use db::{Db, TtlValue};
+//! use db::Db;
 //! use std::time::Duration;
 //!
 //! let db = Db::new();
@@ -266,10 +266,6 @@ impl Default for Db {
         Self::new()
     }
 }
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Stats
-// ══════════════════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone)]
 pub struct DbStats {
