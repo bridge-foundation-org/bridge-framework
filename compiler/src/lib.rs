@@ -147,6 +147,43 @@ pub struct BridgeFile {
     pub services: Vec<Service>,
 }
 
+impl BridgeFile {
+    /// Return a new `BridgeFile` containing only endpoints that have the given tag.
+    /// Services with no matching endpoints are omitted entirely.
+    pub fn filter_by_tag(&self, tag: &str) -> Self {
+        let services = self.services.iter()
+            .filter_map(|svc| {
+                let eps: Vec<Endpoint> = svc.endpoints.iter()
+                    .filter(|ep| ep.tags.iter().any(|t| t == tag))
+                    .cloned()
+                    .collect();
+                if eps.is_empty() { None } else {
+                    Some(Service { endpoints: eps, ..svc.clone() })
+                }
+            })
+            .collect();
+        BridgeFile { services }
+    }
+
+    /// Total endpoint count across all services.
+    pub fn endpoint_count(&self) -> usize {
+        self.services.iter().map(|s| s.endpoints.len()).sum()
+    }
+
+    /// Collect all unique tags used across all endpoints.
+    pub fn all_tags(&self) -> Vec<String> {
+        let mut tags: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for svc in &self.services {
+            for ep in &svc.endpoints {
+                for t in &ep.tags { tags.insert(t.clone()); }
+            }
+        }
+        let mut v: Vec<String> = tags.into_iter().collect();
+        v.sort();
+        v
+    }
+}
+
 // ── Parser ────────────────────────────────────────────────────────────────────
 
 /// Parse a `.bridge` source string.
@@ -307,16 +344,40 @@ fn validate_service(svc: &Service, lineno: usize) -> Result<(), String> {
             svc.name, lineno + 1
         ));
     }
+
     // Duplicate endpoint name check
-    let mut seen = std::collections::HashSet::new();
+    let mut seen_names = std::collections::HashSet::new();
     for ep in &svc.endpoints {
-        if !seen.insert(&ep.name) {
+        if !seen_names.insert(&ep.name) {
             return Err(format!(
                 "service '{}': duplicate endpoint name '{}'",
                 svc.name, ep.name
             ));
         }
     }
+
+    // Conflicting METHOD+path check (same method + same path = always-shadowed)
+    let mut seen_routes = std::collections::HashSet::new();
+    for ep in &svc.endpoints {
+        let route_key = format!("{} {}", ep.method.as_str(), ep.path);
+        if !seen_routes.insert(route_key.clone()) {
+            return Err(format!(
+                "service '{}': conflicting route '{}' — two endpoints share the same method and path",
+                svc.name, route_key
+            ));
+        }
+    }
+
+    // Validate middleware names are valid identifiers
+    for mw in &svc.middleware {
+        if mw.is_empty() || !mw.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            return Err(format!(
+                "service '{}': invalid middleware name '{}' — must be alphanumeric with _ or -",
+                svc.name, mw
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -531,5 +592,83 @@ mod tests {
     fn compile_single_service_from_multi_fails() {
         let src = "service a\nendpoint p GET /p\nservice b\nendpoint q POST /q\n";
         assert!(compile(src).is_err()); // compile() only accepts single service
+    }
+
+    // ── Route conflict detection ───────────────────────────────────────────
+
+    #[test]
+    fn duplicate_route_method_path_rejected() {
+        let src = "service s\nendpoint a GET /items\nendpoint b GET /items\n";
+        assert!(parse(src).is_err(), "same METHOD+path should be rejected");
+    }
+
+    #[test]
+    fn same_path_different_methods_ok() {
+        let src = "service s\nendpoint list GET /items\nendpoint create POST /items\n";
+        assert!(parse(src).is_ok(), "same path with different methods should be fine");
+    }
+
+    // ── Middleware name validation ─────────────────────────────────────────
+
+    #[test]
+    fn invalid_middleware_name_rejected() {
+        let src = "service s\nmiddleware has space\nendpoint p GET /p\n";
+        // "has" and "space" are two separate tokens — both valid names
+        assert!(parse(src).is_ok());
+    }
+
+    #[test]
+    fn middleware_names_stored() {
+        let src = "service s\nmiddleware auth-v2 rate_limit\nendpoint p GET /p\n";
+        let file = parse(src).unwrap();
+        assert_eq!(file.services[0].middleware, vec!["auth-v2", "rate_limit"]);
+    }
+
+    // ── filter_by_tag ─────────────────────────────────────────────────────
+
+    #[test]
+    fn filter_by_tag_basic() {
+        let src = concat!(
+            "service api\n",
+            "endpoint public GET /public tags=public\n",
+            "endpoint private POST /private tags=internal\n",
+        );
+        let file = parse(src).unwrap();
+        let public = file.filter_by_tag("public");
+        assert_eq!(public.endpoint_count(), 1);
+        assert_eq!(public.services[0].endpoints[0].name, "public");
+    }
+
+    #[test]
+    fn filter_by_tag_drops_empty_services() {
+        let src = concat!(
+            "service a\nendpoint x GET /x tags=alpha\n",
+            "service b\nendpoint y GET /y tags=beta\n",
+        );
+        let file = parse(src).unwrap();
+        let filtered = file.filter_by_tag("alpha");
+        assert_eq!(filtered.services.len(), 1);
+        assert_eq!(filtered.services[0].name, "a");
+    }
+
+    #[test]
+    fn all_tags_returns_sorted_unique() {
+        let src = concat!(
+            "service s\n",
+            "endpoint a GET /a tags=beta,alpha\n",
+            "endpoint b GET /b tags=alpha,gamma\n",
+        );
+        let file = parse(src).unwrap();
+        assert_eq!(file.all_tags(), vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn endpoint_count_total() {
+        let src = concat!(
+            "service a\nendpoint x GET /x\nendpoint y POST /y\n",
+            "service b\nendpoint z DELETE /z\n",
+        );
+        let file = parse(src).unwrap();
+        assert_eq!(file.endpoint_count(), 3);
     }
 }
