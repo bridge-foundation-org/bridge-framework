@@ -1,7 +1,10 @@
 [package]
-name = "codegen"
-version = "0.1.0"
-edition = "2024"
+name        = "codegen"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+description = "TypeScript client generator: typed interfaces, path params, auth headers, error types"
 
 [dependencies]
-compiler = { path = "..\\compiler" }
+compiler = { path = "../compiler" }

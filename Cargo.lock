@@ -4,25 +4,25 @@ version = 4
 
 [[package]]
 name = "cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "protocol",
 ]
 
 [[package]]
 name = "codegen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "compiler",
 ]
 
 [[package]]
 name = "compiler"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "codegen",
  "compiler",
@@ -33,16 +33,19 @@ dependencies = [
 
 [[package]]
 name = "db"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "e2e-tests"
-version = "0.1.0"
+version = "0.2.0"
+dependencies = [
+ "protocol",
+]
 
 [[package]]
 name = "miniredis"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "protocol"
-version = "0.1.0"
+version = "0.2.0"

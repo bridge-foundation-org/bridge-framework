@@ -1,157 +1,122 @@
-//! Docker Postgres management.
+//! Docker Postgres lifecycle management.
 //!
-//! Wraps `docker` CLI commands to create, inspect, migrate, and destroy
-//! PostgreSQL containers. All operations shell out to `docker` via
-//! `std::process::Command` — no external Rust crates needed.
+//! All operations shell out to `docker` via `std::process::Command`.
+//! No external Rust crates required.
+//!
+//! Container naming convention: `bridge_pg_<name>`
+//! Default credentials: user=`postgres`, password=`bridge`, port=`5432`.
 
-use std::process::Command as ProcessCommand;
+use std::process::Command;
 
-/// Derive the container name from a user-supplied name.
-fn container_name(name: &str) -> String {
+const PG_IMAGE: &str = "postgres:16";
+const PG_PASSWORD: &str = "bridge";
+const PG_USER: &str = "postgres";
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn cname(name: &str) -> String {
     format!("bridge_pg_{name}")
 }
 
-/// Returns `true` if Docker is installed and responsive.
+/// Returns true when Docker is installed and responsive.
 pub fn docker_available() -> bool {
-    ProcessCommand::new("docker")
-        .arg("version")
+    Command::new("docker")
+        .args(["version", "--format", "{{.Server.Version}}"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
-/// Create a new Postgres 16 container named `bridge_pg_<name>`.
+fn run(args: &[&str]) -> Result<String, String> {
+    let out = Command::new("docker")
+        .args(args)
+        .output()
+        .map_err(|e| format!("docker exec failed: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/// Create and start a new Postgres container.
 ///
-/// ```text
-/// docker run -d --name bridge_pg_<name> \
-///   -e POSTGRES_PASSWORD=bridge -p 5432:5432 postgres:16
-/// ```
+/// Skips creation if a container with the same name already exists.
 pub fn create(name: &str) -> Result<String, String> {
     if !docker_available() {
-        return Err("Docker is not available on this system".to_string());
+        return Err("Docker is not available on this system".into());
     }
-    let cname = container_name(name);
-    let output = ProcessCommand::new("docker")
-        .args([
-            "run",
-            "-d",
-            "--name",
-            &cname,
-            "-e",
-            "POSTGRES_PASSWORD=bridge",
-            "-p",
-            "5432:5432",
-            "postgres:16",
-        ])
-        .output()
-        .map_err(|e| format!("failed to run docker: {e}"))?;
-
-    if output.status.success() {
-        let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(format!("created container {cname} ({id})"))
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(format!("docker run failed: {stderr}"))
+    let cn = cname(name);
+    // Check if already running
+    let existing = run(&["ps", "-a", "--filter", &format!("name={cn}"), "--format", "{{.Names}}"])?;
+    if !existing.is_empty() {
+        return Err(format!("container '{cn}' already exists — use 'pg-destroy {name}' first"));
     }
+    let id = run(&[
+        "run", "-d",
+        "--name", &cn,
+        "-e", &format!("POSTGRES_PASSWORD={PG_PASSWORD}"),
+        "-e", &format!("POSTGRES_USER={PG_USER}"),
+        "-p", "5432:5432",
+        PG_IMAGE,
+    ])?;
+    Ok(format!("created {cn} ({id})"))
 }
 
-/// List running Bridge Postgres containers.
+/// List all bridge_pg_* containers (running and stopped).
 pub fn status() -> Result<String, String> {
     if !docker_available() {
-        return Ok("docker not available".to_string());
+        return Ok("docker not available".into());
     }
-    let output = ProcessCommand::new("docker")
-        .args([
-            "ps",
-            "--filter",
-            "name=bridge_pg_",
-            "--format",
-            "{{.Names}}\t{{.Status}}",
-        ])
-        .output()
-        .map_err(|e| format!("docker ps failed: {e}"))?;
-
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        Ok("no bridge postgres containers running".to_string())
+    let output = run(&[
+        "ps", "-a",
+        "--filter", "name=bridge_pg_",
+        "--format", r#"{"name":"{{.Names}}","status":"{{.Status}}","id":"{{.ID}}"}"#,
+    ])?;
+    if output.is_empty() {
+        Ok(r#"{"containers":[],"message":"no bridge postgres containers found"}"#.into())
     } else {
-        Ok(text)
+        // wrap lines as JSON array
+        let items: Vec<&str> = output.lines().collect();
+        Ok(format!("{{\"containers\":[{}]}}", items.join(",")))
     }
 }
 
-/// Execute SQL against the first running `bridge_pg_*` container via `psql`.
+/// Run a SQL statement against the named container via `psql`.
 pub fn migrate(sql: &str) -> Result<String, String> {
     if !docker_available() {
-        return Err("Docker is not available on this system".to_string());
+        return Err("Docker is not available".into());
     }
-    // Find a running bridge_pg container
-    let ps_output = ProcessCommand::new("docker")
-        .args([
-            "ps",
-            "--filter",
-            "name=bridge_pg_",
-            "--format",
-            "{{.Names}}",
-            "-q",
-        ])
-        .output()
-        .map_err(|e| format!("docker ps failed: {e}"))?;
-    let containers = String::from_utf8_lossy(&ps_output.stdout).trim().to_string();
-    if containers.is_empty() {
-        return Err("no running bridge postgres containers found".to_string());
+    // Find first running bridge_pg_ container
+    let cn = run(&[
+        "ps",
+        "--filter", "name=bridge_pg_",
+        "--filter", "status=running",
+        "--format", "{{.Names}}",
+    ])?;
+    let cn = cn.lines().next().unwrap_or("").trim().to_string();
+    if cn.is_empty() {
+        return Err("no running bridge postgres container found".into());
     }
-    // Use first container found via its name
-    let first_ps = ProcessCommand::new("docker")
-        .args([
-            "ps",
-            "--filter",
-            "name=bridge_pg_",
-            "--format",
-            "{{.Names}}",
-        ])
+    let out = Command::new("docker")
+        .args(["exec", "-i", &cn, "psql", "-U", PG_USER, "-c", sql])
         .output()
-        .map_err(|e| format!("docker ps failed: {e}"))?;
-    let cname = String::from_utf8_lossy(&first_ps.stdout)
-        .lines()
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if cname.is_empty() {
-        return Err("no running bridge postgres containers found".to_string());
-    }
-
-    let output = ProcessCommand::new("docker")
-        .args(["exec", "-i", &cname, "psql", "-U", "postgres", "-c", sql])
-        .output()
-        .map_err(|e| format!("docker exec psql failed: {e}"))?;
-
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .map_err(|e| format!("docker exec psql: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(format!("psql error: {stderr}"))
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
 }
 
-/// Stop and remove the container `bridge_pg_<name>`.
+/// Stop and remove the container.
 pub fn destroy(name: &str) -> Result<String, String> {
     if !docker_available() {
-        return Err("Docker is not available on this system".to_string());
+        return Err("Docker is not available".into());
     }
-    let cname = container_name(name);
-    // Stop
-    let _ = ProcessCommand::new("docker").args(["stop", &cname]).output();
-    // Remove
-    let output = ProcessCommand::new("docker")
-        .args(["rm", "-f", &cname])
-        .output()
-        .map_err(|e| format!("docker rm failed: {e}"))?;
-
-    if output.status.success() {
-        Ok(format!("destroyed container {cname}"))
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(format!("docker rm failed: {stderr}"))
-    }
+    let cn = cname(name);
+    let _ = run(&["stop", &cn]);
+    run(&["rm", "-f", &cn]).map(|_| format!("destroyed {cn}"))
 }

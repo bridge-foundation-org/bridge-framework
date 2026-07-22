@@ -20,6 +20,8 @@ e-commits/
 CLAUDE.md
 claude.md
 .claude/
+# Progress tracking
+.bridge-progress.md
 
 # ── Node / npm ────────────────────────────────────────────────────────────────
 node_modules/

@@ -1,3 +1,20 @@
 [workspace]
-members = ["daemon", "cli", "protocol", "db", "compiler", "codegen", "miniredis", "e2e-tests"]
 resolver = "2"
+members = [
+    "protocol",
+    "compiler",
+    "codegen",
+    "db",
+    "miniredis",
+    "daemon",
+    "cli",
+    "e2e-tests",
+]
+
+[workspace.package]
+version     = "0.2.0"
+edition     = "2021"
+authors     = ["Bridge Framework Contributors"]
+license     = "MIT"
+repository  = "https://github.com/yourusername/bridge-framework"
+description = "Lightweight, Encore-inspired framework for building type-safe backend services"

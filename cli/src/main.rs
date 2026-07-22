@@ -1,3 +1,44 @@
+//! Bridge CLI — `bridge <command> [args]`
+//!
+//! Talks to the daemon over TCP. The `init` command runs locally.
+//!
+//! # Usage
+//!
+//! ```text
+//! bridge init <project-dir>              Scaffold a new Bridge project
+//! bridge ping                            Check daemon health
+//! bridge version                         Show daemon version
+//! bridge health                          Full health report (JSON)
+//! bridge mode-get                        Current mode
+//! bridge mode-set <lite|full|ultra|off>  Change mode
+//! bridge compile <source>                Compile Bridge DSL from string
+//! bridge compile-file <path>             Compile .bridge file → TypeScript
+//! bridge services                        List registered services
+//! bridge routes                          List all routes
+//! bridge auth-set <token>                Set auth token
+//! bridge auth-clear                      Clear auth token
+//! bridge auth-status                     Auth token status
+//! bridge db-put <ns> <key> <value>       Store a value
+//! bridge db-get <ns> <key>               Retrieve a value
+//! bridge db-del <ns> <key>               Delete a value
+//! bridge db-keys <ns>                    List keys in namespace
+//! bridge db-flush <ns>                   Flush a namespace
+//! bridge pg-create <name>                Create Postgres container
+//! bridge pg-status                       Postgres container status
+//! bridge pg-migrate <sql-file>           Run a SQL migration
+//! bridge pg-destroy <name>               Remove Postgres container
+//! bridge redis-status                    Miniredis status
+//! bridge redis-ping                      Ping miniredis
+//! bridge redis-get <key>                 Get a Redis key
+//! bridge redis-set <key> <value>         Set a Redis key
+//! bridge redis-del <key>                 Delete a Redis key
+//! bridge redis-keys <pattern>            List Redis keys
+//! bridge redis-flush                     Flush Redis DB
+//! bridge trace-list                      List recent traces
+//! bridge trace-clear                     Clear all traces
+//! bridge stop                            Stop the daemon
+//! ```
+
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -5,229 +46,239 @@ use std::net::{Shutdown, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process;
 
-use protocol::escape;
+use protocol::encode;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:7878";
 
+// ── Entry point ───────────────────────────────────────────────────────────────
+
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.is_empty() {
-        print_usage_and_exit(1);
-    }
+    if args.is_empty() { usage(); }
 
-    if args[0] == "init" {
-        if args.len() != 2 {
-            eprintln!("init requires a project directory name");
-            process::exit(1);
-        }
+    let cmd = args[0].as_str();
+
+    // Local-only commands
+    if cmd == "init" {
+        if args.len() != 2 { die("init requires exactly one argument: <project-dir>"); }
         match init_project(&args[1]) {
-            Ok(()) => {
-                println!("initialized bridge project at {}", args[1]);
-                return;
-            }
-            Err(err) => {
-                eprintln!("{err}");
-                process::exit(1);
-            }
+            Ok(()) => { println!("✓ Bridge project created at '{}'", args[1]); println!("  cd {} && cargo run -p daemon", args[1]); }
+            Err(e) => die(&e),
         }
+        return;
     }
 
-    let command = match args[0].as_str() {
-        "ping" => "PING".to_string(),
-        "help" => "HELP".to_string(),
-        "stop" => "STOP".to_string(),
-        "mode-get" => "MODE GET".to_string(),
-        "mode-set" => {
-            if args.len() != 2 {
-                eprintln!("mode-set requires one value: lite|full|ultra|off");
-                process::exit(1);
-            }
-            format!("MODE SET {}", args[1])
-        }
-        "compile" => {
-            if args.len() < 2 {
-                eprintln!("compile requires source text");
-                process::exit(1);
-            }
-            let source = args[1..].join(" ");
-            format!("COMPILE {}", escape(&source))
-        }
-        "compile-file" => {
-            if args.len() != 2 {
-                eprintln!("compile-file requires a path");
-                process::exit(1);
-            }
-            let source = match fs::read_to_string(&args[1]) {
-                Ok(text) => text,
-                Err(err) => {
-                    eprintln!("cannot read file {}: {err}", args[1]);
-                    process::exit(1);
-                }
-            };
-            format!("COMPILE {}", escape(&source))
-        }
-        "db-put" => {
-            if args.len() < 4 {
-                eprintln!("db-put requires namespace key value");
-                process::exit(1);
-            }
-            let value = args[3..].join(" ");
-            format!("DB PUT {} {} {}", args[1], args[2], escape(&value))
-        }
-        "db-get" => {
-            if args.len() != 3 {
-                eprintln!("db-get requires namespace key");
-                process::exit(1);
-            }
-            format!("DB GET {} {}", args[1], args[2])
-        }
-        // ── New database commands ──
-        "db-create" => {
-            if args.len() != 2 {
-                eprintln!("db-create requires a database name");
-                process::exit(1);
-            }
-            format!("DB CREATE {}", args[1])
-        }
-        "db-status" => "DB STATUS".to_string(),
-        "db-migrate" => {
-            if args.len() != 2 {
-                eprintln!("db-migrate requires a path to a SQL file");
-                process::exit(1);
-            }
-            let sql = match fs::read_to_string(&args[1]) {
-                Ok(text) => text,
-                Err(err) => {
-                    eprintln!("cannot read SQL file {}: {err}", args[1]);
-                    process::exit(1);
-                }
-            };
-            format!("DB MIGRATE {}", escape(&sql))
-        }
-        "db-destroy" => {
-            if args.len() != 2 {
-                eprintln!("db-destroy requires a database name");
-                process::exit(1);
-            }
-            format!("DB DESTROY {}", args[1])
-        }
-        "redis-status" => "REDIS STATUS".to_string(),
-        "raw" => {
-            if args.len() < 2 {
-                eprintln!("raw requires a command string");
-                process::exit(1);
-            }
-            args[1..].join(" ")
-        }
-        _ => {
-            print_usage_and_exit(1);
-            String::new()
-        }
-    };
-
-    match send_command(&resolve_addr(), &command) {
-        Ok(output) => print!("{}", format_cli_output(&output)),
-        Err(err) => {
-            eprintln!("{err}");
-            process::exit(1);
-        }
+    // Daemon commands
+    let wire = build_command(cmd, &args[1..]);
+    match send(&daemon_addr(), &wire) {
+        Ok(raw) => print!("{}", format_output(&raw)),
+        Err(e)  => { eprintln!("error: {e}"); process::exit(1); }
     }
 }
 
-fn format_cli_output(raw: &str) -> String {
-    let trimmed = raw.trim_end();
-    if let Some(data) = trimmed.strip_prefix("DATA ") {
-        return protocol::unescape(data);
+// ── Command builder ───────────────────────────────────────────────────────────
+
+fn build_command(cmd: &str, rest: &[String]) -> String {
+    match cmd {
+        "ping"         => "PING".into(),
+        "version"      => "VERSION".into(),
+        "health"       => "HEALTH".into(),
+        "help"         => "HELP".into(),
+        "stop"         => "STOP".into(),
+        "mode-get"     => "MODE GET".into(),
+        "mode-set"     => { need(rest, 1, "mode-set <lite|full|ultra|off>"); format!("MODE SET {}", rest[0]) }
+        "compile"      => { need_min(rest, 1, "compile <source>"); format!("COMPILE {}", encode(&rest.join(" "))) }
+        "compile-file" => { need(rest, 1, "compile-file <path>"); format!("COMPILE {}", encode(&read_file(&rest[0]))) }
+        "services"     => "SERVICES LIST".into(),
+        "routes"       => "ROUTES LIST".into(),
+        "auth-status"  => "AUTH STATUS".into(),
+        "auth-set"     => { need(rest, 1, "auth-set <token>"); format!("AUTH SET {}", encode(&rest[0])) }
+        "auth-clear"   => "AUTH CLEAR".into(),
+        "db-put"       => { need_min(rest, 3, "db-put <ns> <key> <value>"); format!("DB PUT {} {} {}", rest[0], rest[1], encode(&rest[2..]                .join(" "))) }
+        "db-get"       => { need(rest, 2, "db-get <ns> <key>"); format!("DB GET {} {}", rest[0], rest[1]) }
+        "db-del"       => { need(rest, 2, "db-del <ns> <key>"); format!("DB DEL {} {}", rest[0], rest[1]) }
+        "db-keys"      => { need(rest, 1, "db-keys <ns>"); format!("DB KEYS {}", rest[0]) }
+        "db-flush"     => { need(rest, 1, "db-flush <ns>"); format!("DB FLUSH {}", rest[0]) }
+        "pg-create"    => { need(rest, 1, "pg-create <name>"); format!("PG CREATE {}", rest[0]) }
+        "pg-status"    => "PG STATUS".into(),
+        "pg-migrate"   => { need(rest, 1, "pg-migrate <sql-file>"); format!("PG MIGRATE {}", encode(&read_file(&rest[0]))) }
+        "pg-destroy"   => { need(rest, 1, "pg-destroy <name>"); format!("PG DESTROY {}", rest[0]) }
+        // legacy aliases
+        "db-create"    => { need(rest, 1, "db-create <name>"); format!("PG CREATE {}", rest[0]) }
+        "db-status"    => "PG STATUS".into(),
+        "db-migrate"   => { need(rest, 1, "db-migrate <sql-file>"); format!("PG MIGRATE {}", encode(&read_file(&rest[0]))) }
+        "db-destroy"   => { need(rest, 1, "db-destroy <name>"); format!("PG DESTROY {}", rest[0]) }
+        "redis-status" => "REDIS STATUS".into(),
+        "redis-ping"   => "REDIS PING".into(),
+        "redis-flush"  => "REDIS FLUSH".into(),
+        "redis-get"    => { need(rest, 1, "redis-get <key>"); format!("REDIS GET {}", rest[0]) }
+        "redis-set"    => { need_min(rest, 2, "redis-set <key> <value>"); format!("REDIS SET {} {}", rest[0], encode(&rest[1..].join(" "))) }
+        "redis-del"    => { need(rest, 1, "redis-del <key>"); format!("REDIS DEL {}", rest[0]) }
+        "redis-keys"   => { need(rest, 1, "redis-keys <pattern>"); format!("REDIS KEYS {}", rest[0]) }
+        "trace-list"   => "TRACE LIST".into(),
+        "trace-clear"  => "TRACE CLEAR".into(),
+        "raw"          => { need_min(rest, 1, "raw <command>"); rest.join(" ") }
+        _ => { eprintln!("unknown command: {cmd}"); usage(); }
     }
-    if let Some(err) = trimmed.strip_prefix("ERR ") {
+}
+
+// ── Output formatter ──────────────────────────────────────────────────────────
+
+fn format_output(raw: &str) -> String {
+    let t = raw.trim_end();
+    if let Some(data) = t.strip_prefix("DATA ") {
+        let decoded = protocol::decode(data).unwrap_or_else(|e| format!("decode error: {e}"));
+        return format!("{decoded}\n");
+    }
+    if let Some(err) = t.strip_prefix("ERR ") {
         return format!("error: {err}\n");
     }
-    format!("{trimmed}\n")
+    format!("{t}\n")
 }
 
-fn resolve_addr() -> String {
+// ── TCP helpers ───────────────────────────────────────────────────────────────
+
+fn daemon_addr() -> String {
     env::var("BRIDGE_TCP_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.to_string())
 }
 
-fn send_command(addr: &str, command: &str) -> Result<String, String> {
+fn send(addr: &str, command: &str) -> Result<String, String> {
     let mut stream = TcpStream::connect(addr).map_err(|e| {
-        format!("cannot connect to daemon at {addr}: {e}. Start it with `cargo run -p daemon`.")
+        format!("cannot connect to daemon at {addr}: {e}\n  → Start it with: cargo run -p daemon")
     })?;
-
-    stream
-        .write_all(format!("{command}\n").as_bytes())
-        .map_err(|e| format!("failed to send command: {e}"))?;
-    stream
-        .shutdown(Shutdown::Write)
-        .map_err(|e| format!("failed to finalize request: {e}"))?;
-
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|e| format!("failed to read response: {e}"))?;
-    Ok(response)
+    stream.write_all(format!("{command}\n").as_bytes()).map_err(|e| format!("write error: {e}"))?;
+    stream.shutdown(Shutdown::Write).map_err(|e| format!("shutdown error: {e}"))?;
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).map_err(|e| format!("read error: {e}"))?;
+    Ok(resp)
 }
 
-fn init_project(dir_name: &str) -> Result<(), String> {
-    let root = PathBuf::from(dir_name);
+// ── File helpers ──────────────────────────────────────────────────────────────
+
+fn read_file(path: &str) -> String {
+    fs::read_to_string(path).unwrap_or_else(|e| die(&format!("cannot read '{}': {e}", path)))
+}
+
+fn die(msg: &str) -> ! { eprintln!("error: {msg}"); process::exit(1); }
+
+fn need(args: &[String], n: usize, usage_hint: &str) {
+    if args.len() < n { die(&format!("usage: bridge {usage_hint}")); }
+}
+fn need_min(args: &[String], n: usize, usage_hint: &str) {
+    if args.len() < n { die(&format!("usage: bridge {usage_hint}")); }
+}
+
+fn usage() -> ! {
+    eprintln!("{USAGE}");
+    process::exit(1);
+}
+
+const USAGE: &str = r#"bridge — type-safe backend services framework
+
+USAGE
+  bridge <command> [args]
+
+COMMANDS
+  init <dir>                  Scaffold a new Bridge project
+  ping                        Check daemon is running
+  version                     Show daemon version
+  health                      Full health report (JSON)
+  mode-get / mode-set <mode>  Get or set mode (lite|full|ultra|off)
+  compile <src>               Compile Bridge DSL source
+  compile-file <path>         Compile a .bridge file → TypeScript client
+  services                    List registered services
+  routes                      List all API routes
+
+  auth-status / auth-set <token> / auth-clear
+
+  db-put <ns> <key> <value>   Store a KV entry
+  db-get <ns> <key>           Read a KV entry
+  db-del <ns> <key>           Delete a KV entry
+  db-keys <ns>                List all keys in a namespace
+  db-flush <ns>               Remove all keys in a namespace
+
+  pg-create <name>            Create a Postgres Docker container
+  pg-status                   List Postgres containers
+  pg-migrate <sql-file>       Run a SQL file
+  pg-destroy <name>           Remove a Postgres container
+
+  redis-status / redis-ping / redis-flush
+  redis-get <key> / redis-set <key> <val> / redis-del <key>
+  redis-keys <pattern>
+
+  trace-list                  Show recent request traces
+  trace-clear                 Clear all traces
+  stop                        Stop the daemon
+
+ENVIRONMENT
+  BRIDGE_TCP_ADDR   TCP address of daemon (default: 127.0.0.1:7878)
+
+DOCS
+  https://github.com/yourusername/bridge-framework
+"#;
+
+// ── `bridge init` scaffolding ─────────────────────────────────────────────────
+
+fn init_project(dir: &str) -> Result<(), String> {
+    let root = PathBuf::from(dir);
     if root.exists() {
-        return Err(format!("target path already exists: {}", root.display()));
+        return Err(format!("'{}' already exists", root.display()));
     }
+    let frontend = root.join("frontend");
+    fs::create_dir_all(frontend.join("src"))
+        .and_then(|_| fs::create_dir_all(frontend.join("bridge.gen")))
+        .map_err(|e| format!("mkdir failed: {e}"))?;
 
-    let frontend_src = root.join("frontend").join("src");
-    let frontend_gen = root.join("frontend").join("bridge.gen");
-    fs::create_dir_all(&frontend_src).map_err(|e| format!("failed to create folders: {e}"))?;
-    fs::create_dir_all(&frontend_gen).map_err(|e| format!("failed to create folders: {e}"))?;
-
-    write_file(&root.join("bridge.app"), SAMPLE_BRIDGE_APP)?;
-    write_file(&root.join("README.md"), INIT_README)?;
-    write_file(&root.join("frontend").join("package.json"), FRONTEND_PACKAGE_JSON)?;
-    write_file(&root.join("frontend").join("vite.config.ts"), FRONTEND_VITE_CONFIG)?;
-    write_file(&root.join("frontend").join("tsconfig.json"), FRONTEND_TSCONFIG)?;
-    write_file(&root.join("frontend").join("index.html"), FRONTEND_INDEX_HTML)?;
-    write_file(&root.join("frontend").join("src").join("main.ts"), FRONTEND_MAIN_TS)?;
-    write_file(&root.join("frontend").join("src").join("style.css"), FRONTEND_STYLE_CSS)?;
-    write_file(
-        &root.join("frontend").join("bridge.gen").join("client.ts"),
-        FRONTEND_CLIENT_TS,
-    )?;
+    wf(&root.join("app.bridge"), SAMPLE_BRIDGE)?;
+    wf(&root.join("README.md"), README)?;
+    wf(&frontend.join("package.json"), PKG_JSON)?;
+    wf(&frontend.join("vite.config.ts"), VITE_CONFIG)?;
+    wf(&frontend.join("tsconfig.json"), TSCONFIG)?;
+    wf(&frontend.join("index.html"), INDEX_HTML)?;
+    wf(&frontend.join("src").join("main.ts"), MAIN_TS)?;
+    wf(&frontend.join("src").join("style.css"), STYLE_CSS)?;
+    wf(&frontend.join("bridge.gen").join("client.ts"), GEN_CLIENT)?;
     Ok(())
 }
 
-fn write_file(path: &Path, content: &str) -> Result<(), String> {
-    fs::write(path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))
+fn wf(path: &Path, content: &str) -> Result<(), String> {
+    fs::write(path, content).map_err(|e| format!("write '{}': {e}", path.display()))
 }
 
-fn print_usage_and_exit(code: i32) {
-    eprintln!(
-        "usage: cli <command>\n\
-         commands:\n\
-           init <project-dir>\n\
-           ping\n\
-           help\n\
-           stop\n\
-           mode-get\n\
-           mode-set <lite|full|ultra|off>\n\
-           compile <source>\n\
-           compile-file <path>\n\
-           db-put <namespace> <key> <value>\n\
-           db-get <namespace> <key>\n\
-           db-create <name>\n\
-           db-status\n\
-           db-migrate <sql-file>\n\
-           db-destroy <name>\n\
-           redis-status\n\
-           raw <command>"
-    );
-    process::exit(code);
-}
+// ── Scaffold templates ────────────────────────────────────────────────────────
 
-const SAMPLE_BRIDGE_APP: &str = "service hello\nendpoint ping GET /ping\nendpoint echo POST /echo\n";
+const SAMPLE_BRIDGE: &str = "\
+# Bridge DSL — define your services here
+service hello
+  auth none
 
-const INIT_README: &str = "# Bridge App\n\n1. Start daemon from bridge-framework repo: `cargo run -p daemon`\n2. Install CLI binary: `cargo install --path ./cli`\n3. Generate client in this app: `cd frontend && npm run generate-client:local`\n4. Run frontend: `npm install && npm run dev`\n";
+endpoint ping   GET  /ping
+endpoint echo   POST /echo
+";
 
-const FRONTEND_PACKAGE_JSON: &str = r#"{
-  "name": "bridge-frontend",
+const README: &str = "\
+# Bridge App
+
+## Getting started
+
+1. Start the daemon (from the bridge-framework repo):
+   ```
+   cargo run -p daemon
+   ```
+
+2. Generate the TypeScript client:
+   ```
+   bridge compile-file app.bridge > frontend/bridge.gen/client.ts
+   ```
+
+3. Run the frontend:
+   ```
+   cd frontend && npm install && npm run dev
+   ```
+";
+
+const PKG_JSON: &str = r#"{
+  "name": "bridge-app",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -235,32 +286,26 @@ const FRONTEND_PACKAGE_JSON: &str = r#"{
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "generate-client:local": "bridge compile-file ../bridge.app > ./bridge.gen/client.ts"
+    "gen": "bridge compile-file ../app.bridge > ./bridge.gen/client.ts"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.1.11",
-    "tailwindcss": "^4.1.11",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"
   }
 }
 "#;
 
-const FRONTEND_VITE_CONFIG: &str = r#"import tailwindcss from "@tailwindcss/vite";
-import { defineConfig } from "vite";
+const VITE_CONFIG: &str = r#"import { defineConfig } from "vite";
 import path from "path";
 
 export default defineConfig({
-  plugins: [tailwindcss()],
   resolve: {
-    alias: {
-      "~bridge": path.resolve(__dirname, "./bridge.gen"),
-    },
+    alias: { "~bridge": path.resolve(__dirname, "./bridge.gen") },
   },
 });
 "#;
 
-const FRONTEND_TSCONFIG: &str = r#"{
+const TSCONFIG: &str = r#"{
   "compilerOptions": {
     "target": "ES2020",
     "module": "ESNext",
@@ -270,12 +315,12 @@ const FRONTEND_TSCONFIG: &str = r#"{
 }
 "#;
 
-const FRONTEND_INDEX_HTML: &str = r#"<!doctype html>
+const INDEX_HTML: &str = r#"<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Bridge Frontend</title>
+    <title>Bridge App</title>
   </head>
   <body>
     <div id="app"></div>
@@ -284,41 +329,31 @@ const FRONTEND_INDEX_HTML: &str = r#"<!doctype html>
 </html>
 "#;
 
-const FRONTEND_MAIN_TS: &str = r#"import "./style.css";
+const MAIN_TS: &str = r##"import "./style.css";
 import { createClient } from "~bridge/client";
 
-const app = document.querySelector<HTMLDivElement>('#app');
-if (!app) throw new Error('missing app root');
-
 const client = createClient("http://127.0.0.1:8787");
+const app = document.querySelector<HTMLDivElement>("#app")!;
 
-async function run() {
-  const result = await client.ping();
-  app.innerHTML = '<main class="mx-auto max-w-2xl p-8"><h1 class="text-3xl font-bold text-white">Bridge Frontend</h1><pre class="mt-4 rounded-lg bg-slate-900 p-4 text-emerald-300">' + result + '</pre></main>';
-}
+client.hello.ping()
+  .then((r) => { app.innerHTML = `<pre>${r}</pre>`; })
+  .catch((e) => { app.textContent = String(e); });
+"##;
 
-run().catch((err) => {
-  app.textContent = String(err);
-});
+const STYLE_CSS: &str = r#"body { font-family: monospace; background: #0f172a; color: #e2e8f0; padding: 2rem; }
+pre { background: #1e293b; border-radius: 8px; padding: 1rem; color: #34d399; }
 "#;
 
-const FRONTEND_STYLE_CSS: &str = r#"@import "tailwindcss";
-
-@layer base {
-  body {
-    @apply bg-slate-950 text-slate-100 antialiased;
-  }
-}
-"#;
-
-const FRONTEND_CLIENT_TS: &str = r##"// Generated by bridge codegen
+const GEN_CLIENT: &str = r#"// Generated by bridge — re-run: bridge compile-file ../app.bridge > bridge.gen/client.ts
 export function createClient(baseUrl: string) {
   return {
-    async ping() {
-      const response = await fetch(`${baseUrl}/health`);
-      if (!response.ok) throw new Error(`request failed: ${response.status}`);
-      return response.text();
+    hello: {
+      async ping() {
+        const r = await fetch(`${baseUrl}/ping`);
+        if (!r.ok) throw new Error(`ping failed: ${r.status}`);
+        return r.text();
+      },
     },
   };
 }
-"##;
+"#;

@@ -1,11 +1,14 @@
 [package]
-name = "daemon"
-version = "0.1.0"
-edition = "2024"
+name        = "daemon"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+description = "Bridge daemon: TCP + HTTP server, state management, Docker Postgres orchestration"
 
 [dependencies]
-protocol = { path = "..\\protocol" }
-db = { path = "..\\db" }
-compiler = { path = "..\\compiler" }
-codegen = { path = "..\\codegen" }
-miniredis = { path = "..\\miniredis" }
+protocol  = { path = "../protocol" }
+compiler  = { path = "../compiler" }
+codegen   = { path = "../codegen" }
+db        = { path = "../db" }
+miniredis = { path = "../miniredis" }

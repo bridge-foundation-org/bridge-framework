@@ -1,11 +1,14 @@
 [package]
-name = "cli"
-version = "0.1.0"
-edition = "2024"
+name        = "cli"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+description = "bridge CLI: compile, db, redis, auth, traces, init scaffolding"
 
 [[bin]]
 name = "bridge"
 path = "src/main.rs"
 
 [dependencies]
-protocol = { path = "..\\protocol" }
+protocol = { path = "../protocol" }
