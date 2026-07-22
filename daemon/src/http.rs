@@ -12,12 +12,23 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
+use crate::auth;
 use crate::sqldb;
 use crate::state::{LogLevel, SharedState};
+
+// ── Request ID counter ────────────────────────────────────────────────────────
+
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_request_id() -> String {
+    let n = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("req-{n:08x}")
+}
 
 // ── Server ────────────────────────────────────────────────────────────────────
 
@@ -99,20 +110,27 @@ fn parse_request(stream: &TcpStream) -> Option<Request> {
 // ── Response helpers ──────────────────────────────────────────────────────────
 
 fn json_response(status: u16, body: &str) -> String {
+    json_response_with_id(status, body, "")
+}
+
+fn json_response_with_id(status: u16, body: &str, req_id: &str) -> String {
     let reason = match status {
         200 => "OK", 201 => "Created", 204 => "No Content",
-        400 => "Bad Request", 401 => "Unauthorized", 404 => "Not Found",
-        405 => "Method Not Allowed", 500 => "Internal Server Error",
-        _ => "Unknown",
+        400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
+        404 => "Not Found", 405 => "Method Not Allowed",
+        500 => "Internal Server Error", _ => "Unknown",
     };
-    let origin = cors_origin();
+    let origin  = cors_origin();
+    let id_hdr  = if req_id.is_empty() { String::new() }
+                  else { format!("X-Bridge-Request-Id: {req_id}\r\n") };
     format!(
         "HTTP/1.1 {status} {reason}\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {len}\r\n\
          Access-Control-Allow-Origin: {origin}\r\n\
          Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, Authorization, X-Bridge-Token\r\n\
+         Access-Control-Allow-Headers: Content-Type, Authorization, X-Bridge-Token, X-Api-Key\r\n\
+         {id_hdr}\
          Connection: close\r\n\
          \r\n\
          {body}",
@@ -129,7 +147,21 @@ fn text_response(status: u16, body: &str) -> String {
          Content-Length: {len}\r\n\
          Access-Control-Allow-Origin: {origin}\r\n\
          Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n\
-         Access-Control-Allow-Headers: Content-Type, Authorization, X-Bridge-Token\r\n\
+         Access-Control-Allow-Headers: Content-Type, Authorization, X-Bridge-Token, X-Api-Key\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
+        len = body.len()
+    )
+}
+
+fn prometheus_response(body: &str) -> String {
+    let origin = cors_origin();
+    format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: text/plain; version=0.0.4\r\n\
+         Content-Length: {len}\r\n\
+         Access-Control-Allow-Origin: {origin}\r\n\
          Connection: close\r\n\
          \r\n\
          {body}",
@@ -156,36 +188,39 @@ fn not_found()     -> String { json_response(404, r#"{"error":"not found"}"#) }
 fn bad_request(msg: &str) -> String {
     json_response(400, &format!(r#"{{"error":"{msg}"}}"#))
 }
+fn unauthorized(msg: &str) -> String {
+    json_response(401, &format!(r#"{{"error":"unauthenticated","message":"{}"}}"#, msg))
+}
 
 // ── Connection handler ────────────────────────────────────────────────────────
 
 fn handle(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> {
     let start  = Instant::now();
+    let req_id = next_request_id();
     let req    = match parse_request(&stream) { Some(r) => r, None => return Ok(()) };
     let method = req.method.clone();
     let path   = req.path.clone();
 
-    // CORS preflight
+    // CORS preflight — always allowed, no auth check
     if method == "OPTIONS" {
         stream.write_all(cors_preflight().as_bytes())?;
         return stream.flush();
     }
 
-    let response = route(&req, &state);
-    let status   = response.split_whitespace().nth(1)
-        .and_then(|s| s.parse::<u16>().ok()).unwrap_or(200);
-    let elapsed  = start.elapsed().as_millis() as u64;
+    // route() handles auth enforcement + request-ID injection
+    let response = route(&req, &state, &req_id);
 
-    // Record trace
-    {
-        if let Ok(mut g) = state.lock() {
-            g.push_trace(&method, &path, status, elapsed);
-            g.push_log(
-                if status >= 500 { LogLevel::Error } else { LogLevel::Info },
-                &format!("{method} {path} {status} {elapsed}ms"),
-                Default::default(),
-            );
-        }
+    let status = response.split_whitespace().nth(1)
+        .and_then(|s| s.parse::<u16>().ok()).unwrap_or(200);
+    let elapsed = start.elapsed().as_millis() as u64;
+
+    if let Ok(mut g) = state.lock() {
+        g.push_trace(&method, &path, status, elapsed);
+        g.push_log(
+            if status >= 500 { LogLevel::Error } else { LogLevel::Info },
+            &format!("{method} {path} {status} {elapsed}ms req_id={req_id}"),
+            Default::default(),
+        );
     }
 
     stream.write_all(response.as_bytes())?;
@@ -194,9 +229,35 @@ fn handle(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> {
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
-fn route(req: &Request, state: &SharedState) -> String {
+fn route(req: &Request, state: &SharedState, req_id: &str) -> String {
     let path = req.path.split('?').next().unwrap_or(&req.path);
 
+    // Auth middleware — enforce token on non-public endpoints
+    if should_enforce_auth(path) {
+        let configured_token = state.lock().unwrap().auth_token.clone();
+        if let Some(expected) = configured_token {
+            if let Err(msg) = check_auth(req, &expected) {
+                let body = format!(r#"{{"error":"unauthenticated","message":"{}"}}"#, msg);
+                return inject_request_id(json_response(401, &body), req_id);
+            }
+        }
+    }
+
+    let inner = route_inner(req, state, path);
+    inject_request_id(inner, req_id)
+}
+
+/// Inject X-Bridge-Request-Id into any HTTP response string.
+fn inject_request_id(mut response: String, req_id: &str) -> String {
+    if req_id.is_empty() { return response; }
+    let header = format!("X-Bridge-Request-Id: {req_id}\r\n");
+    if let Some(pos) = response.find("Connection: close") {
+        response.insert_str(pos, &header);
+    }
+    response
+}
+
+fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
     match (req.method.as_str(), path) {
         // ── Legacy health / mode ──────────────────────────────────────────
         ("GET",  "/health")  => health(state),
@@ -241,14 +302,42 @@ fn route(req: &Request, state: &SharedState) -> String {
             let id = p.trim_start_matches("/api/v1/traces/");
             trace_get(id, state)
         }
-        ("GET",  "/api/v1/metrics")       => metrics(state),
-        ("DELETE", "/api/v1/metrics")     => metrics_clear(state),
-        ("GET",  "/api/v1/openapi")       => openapi(state),
-        ("POST", "/api/v1/sampling")      => set_sampling(req, state),
+        ("GET",  "/api/v1/metrics")            => metrics(state),
+        ("GET",  "/api/v1/metrics/prometheus")  => metrics_prometheus(state),
+        ("DELETE", "/api/v1/metrics")          => metrics_clear(state),
+        ("GET",  "/api/v1/openapi")            => openapi(state),
+        ("POST", "/api/v1/sampling")           => set_sampling(req, state),
 
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
     }
+}
+
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+
+/// Returns true for endpoints that require auth when a token is configured.
+/// Health, version, and auth-management paths are always public.
+pub fn should_enforce_auth(path: &str) -> bool {
+    !matches!(path,
+        "/health" | "/api/v1/health" | "/api/v1/version" |
+        "/api/v1/auth/status" | "/api/v1/auth/set" | "/api/v1/auth/clear"
+    )
+}
+
+/// Validate the request's auth headers against the configured token.
+/// Accepts: `Authorization: Bearer <token>`, `X-Api-Key: <key>`, `X-Bridge-Token: <tok>`.
+pub fn check_auth(req: &Request, expected: &str) -> Result<(), String> {
+    if let Some(hdr) = req.header("authorization") {
+        let tok = hdr.strip_prefix("Bearer ").unwrap_or(hdr).trim();
+        return if tok == expected { Ok(()) } else { Err("invalid bearer token".into()) };
+    }
+    if let Some(key) = req.header("x-api-key") {
+        return if key.trim() == expected { Ok(()) } else { Err("invalid API key".into()) };
+    }
+    if let Some(tok) = req.header("x-bridge-token") {
+        return if tok.trim() == expected { Ok(()) } else { Err("invalid bridge token".into()) };
+    }
+    Err("authentication required".into())
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -379,14 +468,51 @@ fn redis_status(state: &SharedState) -> String {
 
 fn auth_status(state: &SharedState) -> String {
     let g = state.lock().unwrap();
-    ok(&format!(r#"{{"configured":{}}}"#, g.auth_token.is_some()))
+    let scheme = g.auth_token.as_ref().map(|_| "bearer").unwrap_or("none");
+    ok(&format!(r#"{{"configured":{},"scheme":"{}"}}"#, g.auth_token.is_some(), scheme))
 }
 
+/// Accept either plain text token or JSON body:
+/// `{"scheme":"bearer","token":"my-secret"}` or just `my-secret`
 fn auth_set(req: &Request, state: &SharedState) -> String {
-    let token = req.body.trim().to_string();
-    if token.is_empty() { return bad_request("token required"); }
+    let body = req.body.trim();
+    if body.is_empty() { return bad_request("token required"); }
+
+    let token = if body.starts_with('{') {
+        // Parse JSON: look for "token" field
+        extract_json_field(body, "token")
+            .unwrap_or_else(|| body.to_string())
+    } else {
+        // Plain string token (strip surrounding quotes if present)
+        body.trim_matches('"').to_string()
+    };
+
+    if token.is_empty() { return bad_request("token value is empty"); }
+    let scheme = if body.starts_with('{') {
+        extract_json_field(body, "scheme").unwrap_or_else(|| "bearer".to_string())
+    } else {
+        "bearer".to_string()
+    };
+
     state.lock().unwrap().auth_token = Some(token);
-    ok(r#"{"message":"auth token set"}"#)
+    ok(&format!(r#"{{"message":"auth token set","scheme":"{}"}}"#, scheme))
+}
+
+/// Minimal JSON field extractor for simple flat objects (no serde dependency).
+fn extract_json_field(json: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{}\"", field);
+    let pos = json.find(&needle)?;
+    let rest = json[pos + needle.len()..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    if rest.starts_with('"') {
+        let inner = &rest[1..];
+        let end = inner.find('"')?;
+        Some(inner[..end].to_string())
+    } else {
+        // non-string value — take until , or }
+        let end = rest.find(|c| c == ',' || c == '}').unwrap_or(rest.len());
+        Some(rest[..end].trim().to_string())
+    }
 }
 
 fn auth_clear(state: &SharedState) -> String {
@@ -420,6 +546,39 @@ fn trace_get(id: &str, state: &SharedState) -> String {
 fn metrics(state: &SharedState) -> String {
     let g = state.lock().unwrap();
     ok(&g.metrics.to_json())
+}
+
+/// Prometheus text format at /api/v1/metrics/prometheus
+fn metrics_prometheus(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    let m = &g.metrics;
+    let mut lines = Vec::new();
+
+    lines.push("# HELP bridge_requests_total Total HTTP requests processed".to_string());
+    lines.push("# TYPE bridge_requests_total counter".to_string());
+    lines.push(format!("bridge_requests_total {}", m.total_requests));
+
+    lines.push("# HELP bridge_errors_total Total HTTP errors (status >= 400)".to_string());
+    lines.push("# TYPE bridge_errors_total counter".to_string());
+    lines.push(format!("bridge_errors_total {}", m.total_errors));
+
+    for (key, count) in &m.request_counts {
+        let label = key.replace(' ', "_").replace('/', "_").replace('-', "_");
+        lines.push(format!(
+            "bridge_endpoint_requests_total{{endpoint=\"{}\"}} {}",
+            label, count
+        ));
+    }
+    for (key, errs) in &m.error_counts {
+        let label = key.replace(' ', "_").replace('/', "_").replace('-', "_");
+        lines.push(format!(
+            "bridge_endpoint_errors_total{{endpoint=\"{}\"}} {}",
+            label, errs
+        ));
+    }
+
+    lines.push(String::new()); // trailing newline
+    prometheus_response(&lines.join("\n"))
 }
 
 fn metrics_clear(state: &SharedState) -> String {
@@ -460,118 +619,261 @@ mod tests {
     }
 
     fn fake_req(method: &str, path: &str, body: &str) -> Request {
-        Request {
-            method:  method.to_string(),
-            path:    path.to_string(),
-            headers: vec![],
-            body:    body.to_string(),
-        }
+        Request { method: method.to_string(), path: path.to_string(),
+                  headers: vec![], body: body.to_string() }
     }
+
+    fn fake_req_with_header(method: &str, path: &str, body: &str,
+                             hdr_name: &str, hdr_val: &str) -> Request {
+        Request { method: method.to_string(), path: path.to_string(),
+                  headers: vec![(hdr_name.to_string(), hdr_val.to_string())],
+                  body: body.to_string() }
+    }
+
+    fn r(method: &str, path: &str, body: &str) -> String {
+        route(&fake_req(method, path, body), &state(), "test-id")
+    }
+
+    fn rs(method: &str, path: &str, body: &str, s: &SharedState) -> String {
+        route(&fake_req(method, path, body), s, "test-id")
+    }
+
+    // ── Health & version ──────────────────────────────────────────────────
 
     #[test]
     fn health_returns_ok() {
-        let r = route(&fake_req("GET", "/health", ""), &state());
-        assert!(r.contains("200"), "got: {r}");
-        assert!(r.contains("\"status\":\"ok\""), "got: {r}");
+        let resp = r("GET", "/health", "");
+        assert!(resp.contains("200"),            "got: {resp}");
+        assert!(resp.contains("\"status\":\"ok\""), "got: {resp}");
     }
 
     #[test]
     fn health_includes_version() {
-        let r = route(&fake_req("GET", "/health", ""), &state());
-        assert!(r.contains("version"), "got: {r}");
+        assert!(r("GET", "/health", "").contains("version"));
     }
 
     #[test]
+    fn api_v1_health() {
+        let resp = r("GET", "/api/v1/health", "");
+        assert!(resp.contains("200"),            "got: {resp}");
+        assert!(resp.contains("\"status\":\"ok\""), "got: {resp}");
+    }
+
+    #[test]
+    fn version_endpoint() {
+        let resp = r("GET", "/api/v1/version", "");
+        assert!(resp.contains("200"),     "got: {resp}");
+        assert!(resp.contains("version"), "got: {resp}");
+    }
+
+    // ── Mode ──────────────────────────────────────────────────────────────
+
+    #[test]
     fn mode_get_returns_mode() {
-        let r = route(&fake_req("GET", "/mode", ""), &state());
-        assert!(r.contains("mode"), "got: {r}");
+        assert!(r("GET", "/mode", "").contains("mode"));
     }
 
     #[test]
     fn mode_set_valid() {
-        let r = route(&fake_req("POST", "/mode", "lite"), &state());
-        assert!(r.contains("200"), "got: {r}");
+        assert!(r("POST", "/mode", "lite").contains("200"));
     }
 
     #[test]
     fn mode_set_invalid() {
-        let r = route(&fake_req("POST", "/mode", "nope"), &state());
-        assert!(r.contains("400"), "got: {r}");
+        assert!(r("POST", "/mode", "nope").contains("400"));
     }
+
+    // ── Compile ───────────────────────────────────────────────────────────
 
     #[test]
     fn compile_returns_ts() {
-        let r = route(&fake_req("POST", "/compile", "service hello\nendpoint ping GET /ping"), &state());
-        assert!(r.contains("200"), "got: {r}");
-        assert!(r.contains("hello") || r.contains("BridgeClient"), "got: {r}");
+        let resp = r("POST", "/compile", "service hello\nendpoint ping GET /ping");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("hello"), "got: {resp}");
     }
 
     #[test]
     fn compile_bad_source() {
-        let r = route(&fake_req("POST", "/compile", "bad source###"), &state());
-        assert!(r.contains("400"), "got: {r}");
+        assert!(r("POST", "/compile", "bad source###").contains("400"));
     }
 
     #[test]
     fn services_before_compile() {
-        let r = route(&fake_req("GET", "/services", ""), &state());
-        assert!(r.contains("400"), "got: {r}");
+        assert!(r("GET", "/services", "").contains("400"));
     }
+
+    // ── CORS ──────────────────────────────────────────────────────────────
 
     #[test]
     fn cors_preflight_responds_204() {
-        let r = cors_preflight();
-        assert!(r.contains("204"), "got: {r}");
-        assert!(r.contains("Access-Control-Allow-Origin"), "got: {r}");
+        let resp = cors_preflight();
+        assert!(resp.contains("204"),                        "got: {resp}");
+        assert!(resp.contains("Access-Control-Allow-Origin"), "got: {resp}");
     }
+
+    // ── Metrics ───────────────────────────────────────────────────────────
 
     #[test]
     fn metrics_endpoint() {
         let s = state();
         s.lock().unwrap().push_trace("GET", "/ping", 200, 5);
-        let r = route(&fake_req("GET", "/api/v1/metrics", ""), &s);
-        assert!(r.contains("200"), "got: {r}");
-        assert!(r.contains("total_requests"), "got: {r}");
+        let resp = rs("GET", "/api/v1/metrics", "", &s);
+        assert!(resp.contains("200"),             "got: {resp}");
+        assert!(resp.contains("total_requests"),  "got: {resp}");
     }
 
     #[test]
+    fn metrics_prometheus_endpoint() {
+        let s = state();
+        s.lock().unwrap().push_trace("GET", "/ping", 200, 5);
+        let resp = rs("GET", "/api/v1/metrics/prometheus", "", &s);
+        assert!(resp.contains("200"),                     "got: {resp}");
+        assert!(resp.contains("bridge_requests_total"),   "got: {resp}");
+        assert!(resp.contains("text/plain"),              "got: {resp}");
+    }
+
+    // ── Sampling ──────────────────────────────────────────────────────────
+
+    #[test]
     fn sampling_set() {
-        let r = route(&fake_req("POST", "/api/v1/sampling", "0.5"), &state());
-        assert!(r.contains("200"), "got: {r}");
-        assert!(r.contains("0.5"), "got: {r}");
+        let resp = r("POST", "/api/v1/sampling", "0.5");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("0.5"), "got: {resp}");
     }
 
     #[test]
     fn sampling_invalid() {
-        let r = route(&fake_req("POST", "/api/v1/sampling", "2.0"), &state());
-        assert!(r.contains("400"), "got: {r}");
+        assert!(r("POST", "/api/v1/sampling", "2.0").contains("400"));
     }
+
+    // ── Not found ─────────────────────────────────────────────────────────
 
     #[test]
     fn not_found_returns_404() {
-        let r = route(&fake_req("GET", "/nonexistent", ""), &state());
-        assert!(r.contains("404"), "got: {r}");
+        assert!(r("GET", "/nonexistent", "").contains("404"));
     }
 
-    #[test]
-    fn api_v1_health() {
-        let r = route(&fake_req("GET", "/api/v1/health", ""), &state());
-        assert!(r.contains("200"), "got: {r}");
-        assert!(r.contains("\"status\":\"ok\""), "got: {r}");
-    }
+    // ── OpenAPI ───────────────────────────────────────────────────────────
 
     #[test]
     fn openapi_before_compile() {
-        let r = route(&fake_req("GET", "/api/v1/openapi", ""), &state());
-        assert!(r.contains("400"), "got: {r}");
+        assert!(r("GET", "/api/v1/openapi", "").contains("400"));
     }
 
     #[test]
     fn openapi_after_compile() {
         let s = state();
-        route(&fake_req("POST", "/compile", "service api\nendpoint list GET /items"), &s);
-        let r = route(&fake_req("GET", "/api/v1/openapi", ""), &s);
-        assert!(r.contains("200"), "got: {r}");
-        assert!(r.contains("openapi"), "got: {r}");
+        rs("POST", "/compile", "service api\nendpoint list GET /items", &s);
+        let resp = rs("GET", "/api/v1/openapi", "", &s);
+        assert!(resp.contains("200"),    "got: {resp}");
+        assert!(resp.contains("openapi"), "got: {resp}");
+    }
+
+    // ── Request ID ────────────────────────────────────────────────────────
+
+    #[test]
+    fn response_contains_request_id() {
+        let resp = route(&fake_req("GET", "/health", ""), &state(), "req-abc123");
+        assert!(resp.contains("req-abc123"),             "got: {resp}");
+        assert!(resp.contains("X-Bridge-Request-Id"),    "got: {resp}");
+    }
+
+    #[test]
+    fn request_id_counter_increments() {
+        let id1 = next_request_id();
+        let id2 = next_request_id();
+        assert_ne!(id1, id2, "each request should get a unique ID");
+    }
+
+    // ── Auth middleware ───────────────────────────────────────────────────
+
+    #[test]
+    fn auth_health_always_public() {
+        // /health is never gated even when a token is configured
+        assert!(!should_enforce_auth("/health"));
+        assert!(!should_enforce_auth("/api/v1/health"));
+    }
+
+    #[test]
+    fn auth_other_paths_enforced() {
+        assert!(should_enforce_auth("/api/v1/metrics"));
+        assert!(should_enforce_auth("/compile"));
+        assert!(should_enforce_auth("/api/v1/traces"));
+    }
+
+    #[test]
+    fn auth_valid_bearer_passes() {
+        let req = fake_req_with_header("GET", "/api/v1/metrics", "",
+                                       "Authorization", "Bearer secret-token");
+        assert!(check_auth(&req, "secret-token").is_ok());
+    }
+
+    #[test]
+    fn auth_invalid_bearer_fails() {
+        let req = fake_req_with_header("GET", "/api/v1/metrics", "",
+                                       "Authorization", "Bearer wrong-token");
+        assert!(check_auth(&req, "secret-token").is_err());
+    }
+
+    #[test]
+    fn auth_x_api_key_passes() {
+        let req = fake_req_with_header("GET", "/api/v1/metrics", "",
+                                       "x-api-key", "my-key");
+        assert!(check_auth(&req, "my-key").is_ok());
+    }
+
+    #[test]
+    fn auth_no_header_fails() {
+        let req = fake_req("GET", "/api/v1/metrics", "");
+        assert!(check_auth(&req, "secret-token").is_err());
+    }
+
+    // ── Auth set (JSON body) ──────────────────────────────────────────────
+
+    #[test]
+    fn auth_set_plain_token() {
+        let s = state();
+        let resp = rs("POST", "/api/v1/auth/set", "my-plain-token", &s);
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(s.lock().unwrap().auth_token == Some("my-plain-token".to_string()));
+    }
+
+    #[test]
+    fn auth_set_json_body() {
+        let s = state();
+        let resp = rs("POST", "/api/v1/auth/set",
+                      r#"{"scheme":"bearer","token":"json-token"}"#, &s);
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(s.lock().unwrap().auth_token == Some("json-token".to_string()));
+    }
+
+    #[test]
+    fn auth_set_then_enforce() {
+        let s = state();
+        // Set a token
+        rs("POST", "/api/v1/auth/set", "gate-token", &s);
+        // Request without auth → 401
+        let bad = route(&fake_req("GET", "/api/v1/metrics", ""), &s, "r1");
+        assert!(bad.contains("401"), "expected 401 without token, got: {bad}");
+        // Request with correct bearer → 200
+        let good = route(
+            &fake_req_with_header("GET", "/api/v1/metrics", "",
+                                   "Authorization", "Bearer gate-token"),
+            &s, "r2",
+        );
+        assert!(good.contains("200"), "expected 200 with valid token, got: {good}");
+    }
+
+    // ── JSON field extractor ──────────────────────────────────────────────
+
+    #[test]
+    fn extract_json_field_string() {
+        assert_eq!(extract_json_field(r#"{"token":"abc"}"#, "token"),
+                   Some("abc".to_string()));
+    }
+
+    #[test]
+    fn extract_json_field_missing() {
+        assert_eq!(extract_json_field(r#"{"other":"x"}"#, "token"), None);
     }
 }
