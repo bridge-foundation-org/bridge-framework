@@ -21,6 +21,7 @@ use crate::auth;
 use crate::middleware::{MiddlewareBuilder, MiddlewareContext, Scope};
 use crate::sqldb;
 use crate::state::{LogLevel, SharedState};
+use crate::watcher;
 
 // ── Request ID counter ────────────────────────────────────────────────────────
 
@@ -208,6 +209,12 @@ fn handle(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> {
         return stream.flush();
     }
 
+    // SSE hot-reload stream — handled inline, never returns normal response
+    let clean_path = path.split('?').next().unwrap_or(&path);
+    if method == "GET" && clean_path == "/api/v1/watch/events" {
+        return handle_sse(stream, state);
+    }
+
     // route() handles auth enforcement + request-ID injection
     let response = route(&req, &state, &req_id);
 
@@ -225,6 +232,60 @@ fn handle(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> {
     }
 
     stream.write_all(response.as_bytes())?;
+    stream.flush()
+}
+
+/// Handle a long-lived SSE connection for hot-reload events.
+fn handle_sse(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> {
+    let origin = cors_origin();
+    // Write SSE headers — keep connection open
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: text/event-stream\r\n\
+         Cache-Control: no-cache\r\n\
+         Access-Control-Allow-Origin: {origin}\r\n\
+         Connection: keep-alive\r\n\
+         Transfer-Encoding: chunked\r\n\
+         \r\n"
+    );
+    stream.write_all(headers.as_bytes())?;
+    stream.flush()?;
+
+    // Register this client
+    let (client_id, rx) = {
+        let mut g = state.lock().unwrap();
+        g.watcher.add_sse_client()
+    };
+
+    // Send a connection-established ping
+    let ping = ": connected\n\n";
+    write_chunk(&mut stream, ping)?;
+
+    // Drain events from channel and forward to client
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+            Ok(msg) => {
+                if write_chunk(&mut stream, &msg).is_err() { break; }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Send SSE keepalive comment
+                if write_chunk(&mut stream, ": keepalive\n\n").is_err() { break; }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    // Cleanup client registration
+    if let Ok(mut g) = state.lock() {
+        g.watcher.remove_sse_client(client_id);
+    }
+    Ok(())
+}
+
+/// Write a single chunk in HTTP chunked transfer encoding.
+fn write_chunk(stream: &mut TcpStream, data: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    stream.write_all(format!("{:x}\r\n{}\r\n", data.len(), data).as_bytes())?;
     stream.flush()
 }
 
@@ -349,6 +410,12 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("GET",    "/api/v1/middleware")        => middleware_list(state),
         ("POST",   "/api/v1/middleware")        => middleware_register(req, state),
         ("DELETE", "/api/v1/middleware")        => middleware_remove(req, state),
+
+        // ── Hot reload / watcher ──────────────────────────────────────────
+        ("GET",    "/api/v1/watch")             => watch_status(state),
+        ("POST",   "/api/v1/watch/files")       => watch_add_file(req, state),
+        ("DELETE", "/api/v1/watch/files")       => watch_remove_file(req, state),
+        ("POST",   "/api/v1/watch/dirs")        => watch_add_dir(req, state),
 
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
@@ -782,6 +849,54 @@ fn build_hook_after(spec: &str) -> Result<crate::middleware::Hook, String> {
     Err(format!("unknown after spec: {spec:?} — supported: \"log\", \"header:<key>:<value>\""))
 }
 
+// ── Watch / hot-reload handlers ───────────────────────────────────────────────
+
+fn watch_status(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.watcher.to_json())
+}
+
+fn watch_add_file(req: &Request, state: &SharedState) -> String {
+    let path = req.body.trim().trim_matches('"');
+    if path.is_empty() { return bad_request("file path required"); }
+    if !path.ends_with(".bridge") {
+        return bad_request("only .bridge files can be watched");
+    }
+    state.lock().unwrap().watcher.watch_file(path);
+    ok(&format!(r#"{{"message":"watching","path":"{path}"}}"#))
+}
+
+fn watch_remove_file(req: &Request, state: &SharedState) -> String {
+    let path = if req.body.trim().starts_with('{') {
+        extract_json_field(req.body.trim(), "path")
+    } else {
+        Some(req.body.trim().trim_matches('"').to_string())
+    };
+    match path {
+        Some(p) if !p.is_empty() => {
+            let removed = state.lock().unwrap().watcher.unwatch(&p);
+            if removed {
+                ok(&format!(r#"{{"message":"unwatched","path":"{p}"}}"#))
+            } else {
+                json_response(404, &format!(r#"{{"error":"not watched","path":"{p}"}}"#))
+            }
+        }
+        _ => bad_request("path required"),
+    }
+}
+
+fn watch_add_dir(req: &Request, state: &SharedState) -> String {
+    let dir = req.body.trim().trim_matches('"');
+    if dir.is_empty() { return bad_request("directory path required"); }
+    let added = {
+        let mut g = state.lock().unwrap();
+        let before = g.watcher.files.len();
+        g.watcher.watch_dir(dir);
+        g.watcher.files.len() - before
+    };
+    ok(&format!(r#"{{"message":"watching directory","dir":"{dir}","new_files":{added}}}"#))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1174,5 +1289,55 @@ mod tests {
     fn parse_scope_endpoint() {
         let s = parse_scope("DELETE:/items/1").unwrap();
         assert_eq!(s, Scope::Endpoint { method: "DELETE".into(), path: "/items/1".into() });
+    }
+
+    // ── Watch / hot-reload HTTP endpoints ─────────────────────────────────
+
+    #[test]
+    fn watch_status_empty() {
+        let resp = r("GET", "/api/v1/watch", "");
+        assert!(resp.contains("200"),          "got: {resp}");
+        assert!(resp.contains("watching"),     "got: {resp}");
+        assert!(resp.contains("poll_ms"),      "got: {resp}");
+    }
+
+    #[test]
+    fn watch_add_file() {
+        let s = state();
+        let resp = rs("POST", "/api/v1/watch/files", "/app/svc.bridge", &s);
+        assert!(resp.contains("200"),         "got: {resp}");
+        assert!(resp.contains("svc.bridge"),  "got: {resp}");
+        let status = rs("GET", "/api/v1/watch", "", &s);
+        assert!(status.contains("svc.bridge"), "file not in status: {status}");
+    }
+
+    #[test]
+    fn watch_add_non_bridge_file_rejected() {
+        let resp = r("POST", "/api/v1/watch/files", "/app/not-a.ts");
+        assert!(resp.contains("400"), "got: {resp}");
+    }
+
+    #[test]
+    fn watch_remove_file() {
+        let s = state();
+        rs("POST", "/api/v1/watch/files", "/app/a.bridge", &s);
+        let del = rs("DELETE", "/api/v1/watch/files", "/app/a.bridge", &s);
+        assert!(del.contains("200"),       "got: {del}");
+        let status = rs("GET", "/api/v1/watch", "", &s);
+        assert!(!status.contains("/app/a.bridge"), "should be removed: {status}");
+    }
+
+    #[test]
+    fn watch_remove_nonexistent_file_404() {
+        let resp = r("DELETE", "/api/v1/watch/files", "/no/such/file.bridge");
+        assert!(resp.contains("404"), "got: {resp}");
+    }
+
+    #[test]
+    fn watch_add_dir_bad_path_returns_ok_with_zero_files() {
+        // Non-existent dir doesn't error — just finds no files
+        let resp = r("POST", "/api/v1/watch/dirs", "/no/such/directory");
+        assert!(resp.contains("200"),        "got: {resp}");
+        assert!(resp.contains("new_files"),  "got: {resp}");
     }
 }

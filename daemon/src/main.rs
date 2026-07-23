@@ -19,6 +19,7 @@ mod sqldb;
 mod state;
 mod streaming;
 mod tcp;
+mod watcher;
 
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -62,7 +63,19 @@ fn main() -> std::io::Result<()> {
         });
     }
 
-    // ── 4. TCP server (main thread — blocks until process exits) ─────────
+    // ── 4. Hot-reload watcher (background thread) ─────────────────────────
+    {
+        let state = Arc::clone(&shared);
+        // Watch current directory for .bridge files if BRIDGE_WATCH_DIR set
+        if let Ok(dir) = std::env::var("BRIDGE_WATCH_DIR") {
+            state.lock().unwrap().watcher.watch_dir(&dir);
+        }
+        state.lock().unwrap().watcher.running = true;
+        watcher::start_watcher(Arc::clone(&state));
+        eprintln!("[bridge] hot-reload watcher started");
+    }
+
+    // ── 5. TCP server (main thread — blocks until process exits) ─────────
     tcp::run_tcp_server(&tcp_addr, shared)
 }
 

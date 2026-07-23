@@ -16,6 +16,7 @@ use crate::middleware::MiddlewareRegistry;
 use crate::pubsub::Broker;
 use crate::secrets::SecretsRegistry;
 use crate::streaming::StreamRegistry;
+use crate::watcher::WatchRegistry;
 
 // ── Trace entry ───────────────────────────────────────────────────────────────
 
@@ -168,6 +169,8 @@ pub struct State {
     pub streams:           StreamRegistry,
     /// Middleware registry.
     pub middleware:        MiddlewareRegistry,
+    /// Hot-reload file watcher.
+    pub watcher:           WatchRegistry,
     /// Monotonically increasing trace ID counter.
     trace_counter:         u64,
     /// RNG state for sampling (simple LCG).
@@ -199,6 +202,7 @@ impl State {
             secrets:           SecretsRegistry::new(),
             streams:           StreamRegistry::new(),
             middleware:        MiddlewareRegistry::new(),
+            watcher:           WatchRegistry::new(),
             trace_counter:     0,
             rng_state:         12345678901234567,
         }
