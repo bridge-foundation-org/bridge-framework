@@ -14,6 +14,7 @@ mod logger;
 mod metrics;
 mod middleware;
 mod pubsub;
+mod ratelimit;
 mod secrets;
 mod sqldb;
 mod state;

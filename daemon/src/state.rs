@@ -14,6 +14,7 @@ use protocol::DaemonMode;
 use crate::metrics::Registry as MetricsRegistry;
 use crate::middleware::MiddlewareRegistry;
 use crate::pubsub::Broker;
+use crate::ratelimit::RateLimiter;
 use crate::secrets::SecretsRegistry;
 use crate::streaming::StreamRegistry;
 use crate::watcher::WatchRegistry;
@@ -171,6 +172,8 @@ pub struct State {
     pub middleware:        MiddlewareRegistry,
     /// Hot-reload file watcher.
     pub watcher:           WatchRegistry,
+    /// Per-endpoint rate limiter.
+    pub rate_limiter:      RateLimiter,
     /// Monotonically increasing trace ID counter.
     trace_counter:         u64,
     /// RNG state for sampling (simple LCG).
@@ -203,6 +206,7 @@ impl State {
             streams:           StreamRegistry::new(),
             middleware:        MiddlewareRegistry::new(),
             watcher:           WatchRegistry::new(),
+            rate_limiter:      RateLimiter::new(),
             trace_counter:     0,
             rng_state:         12345678901234567,
         }

@@ -19,6 +19,7 @@ use std::time::Instant;
 
 use crate::auth;
 use crate::middleware::{MiddlewareBuilder, MiddlewareContext, Scope};
+use crate::ratelimit::BucketKey;
 use crate::sqldb;
 use crate::state::{LogLevel, SharedState};
 use crate::watcher;
@@ -305,6 +306,37 @@ fn route(req: &Request, state: &SharedState, req_id: &str) -> String {
         }
     }
 
+    // Rate limiting — checked before middleware chain
+    {
+        let mut g = state.lock().unwrap();
+        match g.rate_limiter.check(&req.method, path) {
+            Some(Err(retry)) => {
+                let body = format!(
+                    r#"{{"error":"rate limit exceeded","retry_after":{retry}}}"#
+                );
+                let mut resp = json_response(429, &body);
+                resp = inject_header(resp, "Retry-After",           &retry.to_string());
+                resp = inject_header(resp, "X-RateLimit-Remaining", "0");
+                return inject_request_id(resp, req_id);
+            }
+            Some(Ok((cap, rem, reset))) => {
+                // Store RL info to inject headers below
+                drop(g);
+                let inner    = route_after_rl(req, state, path, req_id);
+                let mut resp = inject_header(inner, "X-RateLimit-Limit",     &cap.to_string());
+                resp         = inject_header(resp,  "X-RateLimit-Remaining", &rem.to_string());
+                resp         = inject_header(resp,  "X-RateLimit-Reset",     &reset.to_string());
+                return resp;
+            }
+            None => {} // no rule — fall through
+        }
+    }
+
+    route_after_rl(req, state, path, req_id)
+}
+
+/// Common path after rate-limit check: run middleware chain then handler.
+fn route_after_rl(req: &Request, state: &SharedState, path: &str, req_id: &str) -> String {
     // Middleware chain — before hooks
     let mut mw_ctx = MiddlewareContext::new(&req.method, path, req_id);
     {
@@ -351,6 +383,15 @@ fn inject_extra_headers(mut response: String, headers: &std::collections::HashMa
     }
     if let Some(pos) = response.find("Connection: close") {
         response.insert_str(pos, &to_inject);
+    }
+    response
+}
+
+/// Inject a single named header into a response string.
+fn inject_header(mut response: String, key: &str, value: &str) -> String {
+    let header = format!("{key}: {value}\r\n");
+    if let Some(pos) = response.find("Connection: close") {
+        response.insert_str(pos, &header);
     }
     response
 }
@@ -416,6 +457,11 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("POST",   "/api/v1/watch/files")       => watch_add_file(req, state),
         ("DELETE", "/api/v1/watch/files")       => watch_remove_file(req, state),
         ("POST",   "/api/v1/watch/dirs")        => watch_add_dir(req, state),
+
+        // ── Rate limiting ─────────────────────────────────────────────────
+        ("GET",    "/api/v1/ratelimit")         => ratelimit_list(state),
+        ("POST",   "/api/v1/ratelimit")         => ratelimit_add(req, state),
+        ("DELETE", "/api/v1/ratelimit")         => ratelimit_remove(req, state),
 
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
@@ -897,6 +943,74 @@ fn watch_add_dir(req: &Request, state: &SharedState) -> String {
     ok(&format!(r#"{{"message":"watching directory","dir":"{dir}","new_files":{added}}}"#))
 }
 
+// ── Rate-limit handlers ───────────────────────────────────────────────────────
+
+fn ratelimit_list(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.rate_limiter.to_json())
+}
+
+/// Add a rate-limit rule from JSON body.
+///
+/// ```json
+/// {"method":"GET","path":"/api/v1/users","capacity":100,"refill_rate":10}
+/// ```
+///
+/// - `method`: HTTP method or `"*"` for any
+/// - `path`:   exact path or `"*"` for any
+/// - `capacity`:    maximum burst tokens
+/// - `refill_rate`: tokens refilled per second
+fn ratelimit_add(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    if body.is_empty() { return bad_request("body required"); }
+
+    let method   = extract_json_field(body, "method").unwrap_or_else(|| "*".to_string());
+    let path     = extract_json_field(body, "path").unwrap_or_else(|| "*".to_string());
+    let capacity: u64 = match extract_json_field(body, "capacity")
+        .and_then(|s| s.parse().ok()) {
+        Some(c) if c > 0 => c,
+        _ => return bad_request("capacity must be a positive integer"),
+    };
+    let refill_rate: f64 = match extract_json_field(body, "refill_rate")
+        .and_then(|s| s.parse().ok()) {
+        Some(r) if r > 0.0 => r,
+        _ => return bad_request("refill_rate must be a positive number"),
+    };
+
+    let key = BucketKey::new(method.to_uppercase(), &path);
+    state.lock().unwrap().rate_limiter.add_rule(key, capacity, refill_rate);
+    ok(&format!(
+        r#"{{"message":"rate limit added","method":"{method}","path":"{path}","capacity":{capacity},"refill_rate":{refill_rate}}}"#
+    ))
+}
+
+fn ratelimit_remove(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let method = if body.starts_with('{') {
+        extract_json_field(body, "method").unwrap_or_else(|| "*".to_string())
+    } else {
+        "*".to_string()
+    };
+    let path = if body.starts_with('{') {
+        extract_json_field(body, "path")
+    } else {
+        Some(body.trim_matches('"').to_string())
+    };
+
+    match path {
+        Some(p) if !p.is_empty() => {
+            let key     = BucketKey::new(method.to_uppercase(), &p);
+            let removed = state.lock().unwrap().rate_limiter.remove_rule(&key);
+            if removed {
+                ok(&format!(r#"{{"message":"rate limit removed","method":"{method}","path":"{p}"}}"#))
+            } else {
+                json_response(404, &format!(r#"{{"error":"rule not found","method":"{method}","path":"{p}"}}"#))
+            }
+        }
+        _ => bad_request("path required"),
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1339,5 +1453,95 @@ mod tests {
         let resp = r("POST", "/api/v1/watch/dirs", "/no/such/directory");
         assert!(resp.contains("200"),        "got: {resp}");
         assert!(resp.contains("new_files"),  "got: {resp}");
+    }
+
+    // ── Rate limiting HTTP endpoints ──────────────────────────────────────
+
+    #[test]
+    fn ratelimit_list_empty() {
+        let resp = r("GET", "/api/v1/ratelimit", "");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("[]"),  "got: {resp}");
+    }
+
+    #[test]
+    fn ratelimit_add_rule() {
+        let s = state();
+        let body = r#"{"method":"GET","path":"/items","capacity":10,"refill_rate":1}"#;
+        let resp = rs("POST", "/api/v1/ratelimit", body, &s);
+        assert!(resp.contains("200"),        "got: {resp}");
+        assert!(resp.contains("capacity"),   "got: {resp}");
+        let list = rs("GET", "/api/v1/ratelimit", "", &s);
+        assert!(list.contains("/items"),     "got: {list}");
+    }
+
+    #[test]
+    fn ratelimit_add_missing_capacity() {
+        let resp = r("POST", "/api/v1/ratelimit",
+                     r#"{"method":"GET","path":"/x","refill_rate":1}"#);
+        assert!(resp.contains("400"), "got: {resp}");
+    }
+
+    #[test]
+    fn ratelimit_add_missing_refill_rate() {
+        let resp = r("POST", "/api/v1/ratelimit",
+                     r#"{"method":"GET","path":"/x","capacity":5}"#);
+        assert!(resp.contains("400"), "got: {resp}");
+    }
+
+    #[test]
+    fn ratelimit_remove_rule() {
+        let s = state();
+        rs("POST", "/api/v1/ratelimit",
+           r#"{"method":"POST","path":"/submit","capacity":5,"refill_rate":1}"#, &s);
+        let del = rs("DELETE", "/api/v1/ratelimit",
+                     r#"{"method":"POST","path":"/submit"}"#, &s);
+        assert!(del.contains("200"),    "got: {del}");
+        let list = rs("GET", "/api/v1/ratelimit", "", &s);
+        assert!(!list.contains("/submit"), "rule should be removed: {list}");
+    }
+
+    #[test]
+    fn ratelimit_remove_not_found() {
+        let resp = r("DELETE", "/api/v1/ratelimit",
+                     r#"{"method":"GET","path":"/nonexistent"}"#);
+        assert!(resp.contains("404"), "got: {resp}");
+    }
+
+    #[test]
+    fn ratelimit_enforced_returns_429() {
+        let s = state();
+        // Add rule with capacity 1
+        rs("POST", "/api/v1/ratelimit",
+           r#"{"method":"GET","path":"/health","capacity":1,"refill_rate":0.1}"#, &s);
+        // First request should pass
+        let r1 = route(&fake_req("GET", "/health", ""), &s, "r1");
+        assert!(r1.contains("200"), "first request should pass, got: {r1}");
+        // Second request should be rate-limited
+        let r2 = route(&fake_req("GET", "/health", ""), &s, "r2");
+        assert!(r2.contains("429"), "second request should be 429, got: {r2}");
+        assert!(r2.contains("rate limit exceeded"), "got: {r2}");
+    }
+
+    #[test]
+    fn ratelimit_headers_on_passing_request() {
+        let s = state();
+        rs("POST", "/api/v1/ratelimit",
+           r#"{"method":"GET","path":"/api/v1/version","capacity":100,"refill_rate":10}"#, &s);
+        let resp = route(&fake_req("GET", "/api/v1/version", ""), &s, "r1");
+        assert!(resp.contains("X-RateLimit-Limit"),     "missing Limit header, got: {resp}");
+        assert!(resp.contains("X-RateLimit-Remaining"), "missing Remaining header, got: {resp}");
+        assert!(resp.contains("X-RateLimit-Reset"),     "missing Reset header, got: {resp}");
+    }
+
+    #[test]
+    fn ratelimit_retry_after_on_429() {
+        let s = state();
+        rs("POST", "/api/v1/ratelimit",
+           r#"{"method":"POST","path":"/api/v1/compile","capacity":1,"refill_rate":0.01}"#, &s);
+        route(&fake_req("POST", "/api/v1/compile", "x"), &s, "r1"); // consume token
+        let resp = route(&fake_req("POST", "/api/v1/compile", "x"), &s, "r2");
+        assert!(resp.contains("429"),         "expected 429, got: {resp}");
+        assert!(resp.contains("Retry-After"), "missing Retry-After header, got: {resp}");
     }
 }
