@@ -8,6 +8,7 @@
 //! All three share the same `Arc<Mutex<State>>`.
 
 mod auth;
+mod config;
 mod errors;
 mod http;
 mod logger;
@@ -52,6 +53,23 @@ fn main() -> std::io::Result<()> {
 
     // ── 2. Shared state ───────────────────────────────────────────────────
     let shared = Arc::new(Mutex::new(State::new(redis_info_addr, redis_conn_count)));
+
+    // ── 3. Load bridge.toml (optional) ────────────────────────────────────
+    let config_path = env("BRIDGE_CONFIG", "bridge.toml");
+    match config::BridgeConfig::load(&config_path) {
+        Ok(Some(cfg)) => {
+            eprintln!("[bridge] loaded config: {config_path}");
+            config::apply(&cfg, &shared);
+        }
+        Ok(None) => {
+            // Try current directory
+            if let Ok(Some(cfg)) = config::BridgeConfig::load_from_dir(".") {
+                eprintln!("[bridge] loaded config: ./bridge.toml");
+                config::apply(&cfg, &shared);
+            }
+        }
+        Err(e) => eprintln!("[bridge] config warning: {e}"),
+    }
 
     // ── 3. HTTP server (background thread) ───────────────────────────────
     {

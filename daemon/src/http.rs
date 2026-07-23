@@ -18,6 +18,7 @@ use std::thread;
 use std::time::Instant;
 
 use crate::auth;
+use crate::config;
 use crate::middleware::{MiddlewareBuilder, MiddlewareContext, Scope};
 use crate::ratelimit::BucketKey;
 use crate::sqldb;
@@ -463,6 +464,9 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("POST",   "/api/v1/ratelimit")         => ratelimit_add(req, state),
         ("DELETE", "/api/v1/ratelimit")         => ratelimit_remove(req, state),
 
+        // ── Config ────────────────────────────────────────────────────────
+        ("GET",  "/api/v1/config")              => config_show(state),
+
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
     }
@@ -846,7 +850,7 @@ fn middleware_remove(req: &Request, state: &SharedState) -> String {
 }
 
 /// Parse a scope string: "global" | "service:NAME" | "METHOD:/path"
-fn parse_scope(s: &str) -> Result<Scope, String> {
+pub fn parse_scope(s: &str) -> Result<Scope, String> {
     if s == "global" { return Ok(Scope::Global); }
     if let Some(name) = s.strip_prefix("service:") {
         return Ok(Scope::Service(name.to_string()));
@@ -863,7 +867,7 @@ fn parse_scope(s: &str) -> Result<Scope, String> {
 }
 
 /// Build a before-hook from a spec string.
-fn build_hook_before(spec: &str) -> Result<crate::middleware::Hook, String> {
+pub fn build_hook_before(spec: &str) -> Result<crate::middleware::Hook, String> {
     if spec == "log" {
         return Ok(Box::new(|ctx| ctx.tag("logged")));
     }
@@ -881,7 +885,7 @@ fn build_hook_before(spec: &str) -> Result<crate::middleware::Hook, String> {
 }
 
 /// Build an after-hook from a spec string.
-fn build_hook_after(spec: &str) -> Result<crate::middleware::Hook, String> {
+pub fn build_hook_after(spec: &str) -> Result<crate::middleware::Hook, String> {
     if let Some(rest) = spec.strip_prefix("header:") {
         let parts: Vec<&str> = rest.splitn(2, ':').collect();
         let key = parts.first().copied().unwrap_or("").to_string();
@@ -1009,6 +1013,30 @@ fn ratelimit_remove(req: &Request, state: &SharedState) -> String {
         }
         _ => bad_request("path required"),
     }
+}
+
+// ── Config handler ────────────────────────────────────────────────────────────
+
+/// Return a JSON summary of the current effective runtime configuration.
+fn config_show(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    let middleware_names: Vec<String> = g.middleware.names()
+        .iter().map(|n| format!("\"{n}\"")).collect();
+    let rl_count = g.rate_limiter.to_json();
+    let watch_files: Vec<String> = g.watcher.files.iter()
+        .map(|f| format!("\"{}\"", f.path)).collect();
+    let body = format!(
+        r#"{{"app":"{app}","version":"{ver}","mode":"{mode}","middleware":[{mw}],"ratelimit":{rl},"watch":{{"enabled":{we},"poll_ms":{wms},"files":[{wf}]}}}}"#,
+        app  = g.app_name,
+        ver  = g.app_version,
+        mode = g.mode,
+        mw   = middleware_names.join(","),
+        rl   = rl_count,
+        we   = g.watcher.running,
+        wms  = g.watcher.poll_ms,
+        wf   = watch_files.join(","),
+    );
+    ok(&body)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

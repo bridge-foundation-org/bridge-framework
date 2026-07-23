@@ -267,15 +267,60 @@ fn init_project(dir: &str) -> Result<(), String> {
     if p.exists() { return Err(format!("'{dir}' already exists")); }
     fs::create_dir_all(p).map_err(|e| format!("create dir: {e}"))?;
 
+    // app.bridge — sample service definition
     fs::write(p.join("app.bridge"),
         "# My Bridge application\n\nservice hello\n  endpoint ping GET /ping\n  endpoint echo POST /echo\n"
     ).map_err(|e| format!("write app.bridge: {e}"))?;
 
+    // bridge.toml — project configuration
+    let project_name = std::path::Path::new(dir)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(dir);
+    let toml = default_bridge_toml(project_name);
+    fs::write(p.join("bridge.toml"), toml)
+        .map_err(|e| format!("write bridge.toml: {e}"))?;
+
+    // README.md
     fs::write(p.join("README.md"),
-        format!("# {dir}\n\nBridge Framework application.\n\n```bash\ncargo run -p daemon\nbridge compile-file app.bridge\nbridge ping\n```\n")
+        format!("# {dir}\n\nBridge Framework application.\n\n```bash\ncargo run -p daemon\nbridge compile-file app.bridge\nbridge ping\n```\n\nSee `bridge.toml` for project configuration.\n")
     ).map_err(|e| format!("write README: {e}"))?;
 
     Ok(())
+}
+
+fn default_bridge_toml(name: &str) -> String {
+    format!(
+r#"# bridge.toml — Bridge Framework project configuration
+
+[project]
+name    = "{name}"
+version = "0.1.0"
+
+[daemon]
+http_addr  = "127.0.0.1:8787"
+tcp_addr   = "127.0.0.1:7878"
+redis_addr = "127.0.0.1:6399"
+mode       = "full"            # lite | full | ultra | off
+
+[watch]
+enabled = true
+poll_ms = 500
+dirs    = ["."]
+files   = ["app.bridge"]
+
+[[middleware.rules]]
+name   = "powered-by"
+scope  = "global"
+after  = "header:X-Powered-By:bridge"
+
+[[ratelimit.rules]]
+method      = "POST"
+path        = "/api/v1/compile"
+capacity    = 60
+refill_rate = 1.0
+"#
+    )
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────
@@ -415,7 +460,12 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
         init_project(dir).expect("init failed");
         assert!(std::path::Path::new(dir).join("app.bridge").exists());
+        assert!(std::path::Path::new(dir).join("bridge.toml").exists());
         assert!(std::path::Path::new(dir).join("README.md").exists());
+        // bridge.toml should contain the project name
+        let toml = fs::read_to_string(std::path::Path::new(dir).join("bridge.toml")).unwrap();
+        assert!(toml.contains("test_init_tmp_bridge") || toml.contains("[project]"),
+            "bridge.toml should contain project section: {toml}");
         fs::remove_dir_all(dir).ok();
     }
 
