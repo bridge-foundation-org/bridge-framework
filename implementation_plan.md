@@ -20,6 +20,41 @@ Bridge is a lightweight Encore-inspired framework. This document tracks the impl
 - [x] **Structured 401 responses** — JSON error body on auth failure
 - [x] **JSON auth_set** — POST /api/v1/auth/set accepts `{scheme, token}` body
 
+### Middleware System
+- [x] **Middleware registry** — Composable before/after hook chain
+- [x] **Scoped middleware** — Global / Service / Endpoint scope targeting
+- [x] **Built-in hook specs** — `log`, `reject:<status>:<msg>`, `header:<key>:<value>`
+- [x] **HTTP API** — GET/POST/DELETE /api/v1/middleware
+- [x] **Chain short-circuit** — Before hooks can reject with any HTTP status
+
+### Hot Reload
+- [x] **File watcher** — Background thread polls .bridge files every N ms
+- [x] **Auto-recompile** — Recompiles on mtime change, updates service_registry
+- [x] **SSE events** — `event: reload` / `event: error` broadcast to connected clients
+- [x] **HTTP API** — GET/POST/DELETE /api/v1/watch/files, POST /api/v1/watch/dirs
+- [x] **SSE stream** — GET /api/v1/watch/events (chunked keep-alive)
+- [x] **BRIDGE_WATCH_DIR** — Auto-watch directory via env var on startup
+
+### Rate Limiting
+- [x] **Token-bucket algorithm** — Lazy refill, per-endpoint buckets
+- [x] **Wildcard rules** — `*` in method or path matches any value
+- [x] **Specificity order** — Exact > any-method > any-path > global wildcard
+- [x] **429 responses** — JSON error body with retry_after
+- [x] **Rate-limit headers** — X-RateLimit-Limit/Remaining/Reset, Retry-After
+- [x] **HTTP API** — GET/POST/DELETE /api/v1/ratelimit
+- [x] **Middleware integration** — `RateLimiter::as_middleware()` for registry use
+
+### Project Configuration
+- [x] **bridge.toml** — Pure-std TOML parser, no external crates
+- [x] **[project] section** — name, version
+- [x] **[daemon] section** — http_addr, tcp_addr, redis_addr, mode
+- [x] **[watch] section** — enabled, poll_ms, dirs, files
+- [x] **[[middleware.rules]]** — name, scope, before, after
+- [x] **[[ratelimit.rules]]** — method, path, capacity, refill_rate
+- [x] **Auto-load at startup** — BRIDGE_CONFIG env var or ./bridge.toml
+- [x] **bridge init** — Writes bridge.toml with sensible defaults
+- [x] **GET /api/v1/config** — Runtime config summary endpoint
+
 ### Observability
 - [x] **Trace recording** — Every HTTP request recorded with method/path/status/duration
 - [x] **Prometheus metrics** — GET /api/v1/metrics/prometheus in text/plain; version=0.0.4 format
@@ -51,10 +86,10 @@ Bridge is a lightweight Encore-inspired framework. This document tracks the impl
 - [x] **Tailwind v4** — Modern styling with Encore-inspired design system
 
 ### Testing
-- [x] **264 workspace tests** — All passing (0 failures)
+- [x] **370 workspace tests** — All passing (0 failures)
 - [x] **28 e2e unit tests** — Compiler→Codegen pipeline, protocol, db, miniredis RESP
 - [x] **36 daemon e2e tests** — Full TCP+HTTP+Redis integration (require running daemon)
-- [x] **104 daemon unit tests** — TCP dispatch, HTTP routing, auth middleware, metrics
+- [x] **210 daemon unit tests** — TCP, HTTP, auth, metrics, middleware, watcher, ratelimit, config
 
 ### Documentation
 - [x] **Index** — Overview and quick start
@@ -78,16 +113,13 @@ Bridge is a lightweight Encore-inspired framework. This document tracks the impl
 ## 📋 Planned Features
 
 ### Developer Experience
-- [ ] **Hot reload** — Watch mode for daemon
-- [ ] **CLI autocomplete** — Shell completions
-- [ ] **Project templates** — Scaffolding for new apps
+- [ ] **CLI autocomplete** — Shell completions (bash/zsh/fish) ← already in CLI, needs `bridge completions` docs
+- [ ] **Project templates** — Additional scaffold templates beyond default
 
 ### Advanced Features
 - [ ] **WebSocket support** — Real-time communication via SSE streaming
-- [ ] **Middleware system** — Request/response interceptors in daemon routing
 - [ ] **Multi-service routing** — Service mesh capabilities
-- [ ] **Rate limiting** — Per-endpoint request throttling
-- [ ] **Config file** — `bridge.toml` project configuration
+- [ ] **Config file** — `bridge.toml` ✅ (completed)
 
 ## Architecture Principles
 
