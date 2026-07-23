@@ -12,6 +12,7 @@ mod errors;
 mod http;
 mod logger;
 mod metrics;
+mod middleware;
 mod pubsub;
 mod secrets;
 mod sqldb;

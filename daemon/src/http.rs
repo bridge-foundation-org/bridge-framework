@@ -18,6 +18,7 @@ use std::thread;
 use std::time::Instant;
 
 use crate::auth;
+use crate::middleware::{MiddlewareBuilder, MiddlewareContext, Scope};
 use crate::sqldb;
 use crate::state::{LogLevel, SharedState};
 
@@ -243,7 +244,30 @@ fn route(req: &Request, state: &SharedState, req_id: &str) -> String {
         }
     }
 
-    let inner = route_inner(req, state, path);
+    // Middleware chain — before hooks
+    let mut mw_ctx = MiddlewareContext::new(&req.method, path, req_id);
+    {
+        let g = state.lock().unwrap();
+        g.middleware.run_before(&mut mw_ctx);
+    }
+
+    // If a middleware rejected the request, return early
+    if let Some((status, body)) = mw_ctx.rejection {
+        let resp = json_response(status, &body);
+        return inject_request_id(inject_extra_headers(resp, &mw_ctx.extra_headers), req_id);
+    }
+
+    // Run the actual handler
+    let mut inner = route_inner(req, state, path);
+
+    // Middleware chain — after hooks
+    {
+        let g = state.lock().unwrap();
+        g.middleware.run_after(&mut mw_ctx);
+    }
+
+    // Inject any headers added by after hooks
+    inner = inject_extra_headers(inner, &mw_ctx.extra_headers);
     inject_request_id(inner, req_id)
 }
 
@@ -253,6 +277,19 @@ fn inject_request_id(mut response: String, req_id: &str) -> String {
     let header = format!("X-Bridge-Request-Id: {req_id}\r\n");
     if let Some(pos) = response.find("Connection: close") {
         response.insert_str(pos, &header);
+    }
+    response
+}
+
+/// Inject extra headers (from middleware context) into a response string.
+fn inject_extra_headers(mut response: String, headers: &std::collections::HashMap<String, String>) -> String {
+    if headers.is_empty() { return response; }
+    let mut to_inject = String::new();
+    for (k, v) in headers {
+        to_inject.push_str(&format!("{k}: {v}\r\n"));
+    }
+    if let Some(pos) = response.find("Connection: close") {
+        response.insert_str(pos, &to_inject);
     }
     response
 }
@@ -307,6 +344,11 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("DELETE", "/api/v1/metrics")          => metrics_clear(state),
         ("GET",  "/api/v1/openapi")            => openapi(state),
         ("POST", "/api/v1/sampling")           => set_sampling(req, state),
+
+        // ── Middleware ────────────────────────────────────────────────────
+        ("GET",    "/api/v1/middleware")        => middleware_list(state),
+        ("POST",   "/api/v1/middleware")        => middleware_register(req, state),
+        ("DELETE", "/api/v1/middleware")        => middleware_remove(req, state),
 
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
@@ -606,6 +648,140 @@ fn set_sampling(req: &Request, state: &SharedState) -> String {
     ok(&format!(r#"{{"sample_rate":{rate}}}"#))
 }
 
+// ── Middleware handlers ───────────────────────────────────────────────────────
+
+fn middleware_list(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.middleware.to_json())
+}
+
+/// Register a named middleware from JSON body.
+///
+/// Body format:
+/// ```json
+/// {
+///   "name": "my-logger",
+///   "scope": "global" | "service:users" | "GET:/ping",
+///   "before": "log" | "reject:403:forbidden" | null,
+///   "after":  "header:X-Timing:done"        | null
+/// }
+/// ```
+///
+/// Supported built-in hook specs:
+/// - `"log"`                    — tag the context with the middleware name
+/// - `"reject:<status>:<msg>"` — reject with given status and JSON error body
+/// - `"header:<key>:<value>"`  — inject a response header (after hook)
+fn middleware_register(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    if body.is_empty() { return bad_request("body required"); }
+
+    let name   = match extract_json_field(body, "name") {
+        Some(n) if !n.is_empty() => n,
+        _ => return bad_request("name is required"),
+    };
+    let scope_str = extract_json_field(body, "scope").unwrap_or_else(|| "global".to_string());
+    let scope = match parse_scope(&scope_str) {
+        Ok(s) => s,
+        Err(e) => return bad_request(&e),
+    };
+    let before_spec = extract_json_field(body, "before");
+    let after_spec  = extract_json_field(body, "after");
+
+    let mut builder = MiddlewareBuilder::new(&name).scope(scope);
+
+    if let Some(spec) = before_spec {
+        if spec != "null" {
+            match build_hook_before(&spec) {
+                Ok(hook) => builder = builder.before(hook),
+                Err(e)   => return bad_request(&e),
+            }
+        }
+    }
+    if let Some(spec) = after_spec {
+        if spec != "null" {
+            match build_hook_after(&spec) {
+                Ok(hook) => builder = builder.after(hook),
+                Err(e)   => return bad_request(&e),
+            }
+        }
+    }
+
+    let mut g = state.lock().unwrap();
+    // Replace if name already exists
+    g.middleware.remove(&name);
+    let idx = g.middleware.register(builder.build());
+    ok(&format!(r#"{{"message":"middleware registered","name":"{name}","index":{idx}}}"#))
+}
+
+fn middleware_remove(req: &Request, state: &SharedState) -> String {
+    let name = if req.body.trim().starts_with('{') {
+        extract_json_field(req.body.trim(), "name")
+    } else {
+        Some(req.body.trim().trim_matches('"').to_string())
+    };
+    match name {
+        Some(n) if !n.is_empty() => {
+            let removed = state.lock().unwrap().middleware.remove(&n);
+            if removed {
+                ok(&format!(r#"{{"message":"middleware removed","name":"{n}"}}"#))
+            } else {
+                json_response(404, &format!(r#"{{"error":"middleware not found","name":"{n}"}}"#))
+            }
+        }
+        _ => bad_request("name required"),
+    }
+}
+
+/// Parse a scope string: "global" | "service:NAME" | "METHOD:/path"
+fn parse_scope(s: &str) -> Result<Scope, String> {
+    if s == "global" { return Ok(Scope::Global); }
+    if let Some(name) = s.strip_prefix("service:") {
+        return Ok(Scope::Service(name.to_string()));
+    }
+    // Endpoint: "GET:/ping"
+    if let Some(colon) = s.find(':') {
+        let method = s[..colon].to_uppercase();
+        let path   = s[colon+1..].to_string();
+        if !method.is_empty() && !path.is_empty() {
+            return Ok(Scope::Endpoint { method, path });
+        }
+    }
+    Err(format!("invalid scope: {s:?} — use \"global\", \"service:NAME\", or \"METHOD:/path\""))
+}
+
+/// Build a before-hook from a spec string.
+fn build_hook_before(spec: &str) -> Result<crate::middleware::Hook, String> {
+    if spec == "log" {
+        return Ok(Box::new(|ctx| ctx.tag("logged")));
+    }
+    if let Some(rest) = spec.strip_prefix("reject:") {
+        let parts: Vec<&str> = rest.splitn(2, ':').collect();
+        let status: u16 = parts.first()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| format!("reject spec must be reject:<status>:<msg>, got {spec:?}"))?;
+        let msg = parts.get(1).copied().unwrap_or("rejected").to_string();
+        return Ok(Box::new(move |ctx| {
+            ctx.reject(status, format!(r#"{{"error":"{msg}"}}"#));
+        }));
+    }
+    Err(format!("unknown before spec: {spec:?} — supported: \"log\", \"reject:<status>:<msg>\""))
+}
+
+/// Build an after-hook from a spec string.
+fn build_hook_after(spec: &str) -> Result<crate::middleware::Hook, String> {
+    if let Some(rest) = spec.strip_prefix("header:") {
+        let parts: Vec<&str> = rest.splitn(2, ':').collect();
+        let key = parts.first().copied().unwrap_or("").to_string();
+        let val = parts.get(1).copied().unwrap_or("").to_string();
+        if key.is_empty() { return Err(format!("header spec must be header:<key>:<value>, got {spec:?}")); }
+        return Ok(Box::new(move |ctx| ctx.set_header(key.clone(), val.clone())));
+    }
+    if spec == "log" {
+        return Ok(Box::new(|ctx| ctx.tag("logged-after")));
+    }
+    Err(format!("unknown after spec: {spec:?} — supported: \"log\", \"header:<key>:<value>\""))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -875,5 +1051,128 @@ mod tests {
     #[test]
     fn extract_json_field_missing() {
         assert_eq!(extract_json_field(r#"{"other":"x"}"#, "token"), None);
+    }
+
+    // ── Middleware HTTP endpoints ─────────────────────────────────────────
+
+    #[test]
+    fn middleware_list_empty() {
+        let resp = r("GET", "/api/v1/middleware", "");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("[]"),  "got: {resp}");
+    }
+
+    #[test]
+    fn middleware_register_and_list() {
+        let s = state();
+        let body = r#"{"name":"logger","scope":"global","before":"log"}"#;
+        let reg = rs("POST", "/api/v1/middleware", body, &s);
+        assert!(reg.contains("200"),    "got: {reg}");
+        assert!(reg.contains("logger"), "got: {reg}");
+
+        let list = rs("GET", "/api/v1/middleware", "", &s);
+        assert!(list.contains("logger"), "got: {list}");
+        assert!(list.contains("global"), "got: {list}");
+    }
+
+    #[test]
+    fn middleware_register_service_scope() {
+        let s = state();
+        let body = r#"{"name":"svc-mw","scope":"service:users","before":"log"}"#;
+        let resp = rs("POST", "/api/v1/middleware", body, &s);
+        assert!(resp.contains("200"), "got: {resp}");
+        let list = rs("GET", "/api/v1/middleware", "", &s);
+        assert!(list.contains("service:users"), "got: {list}");
+    }
+
+    #[test]
+    fn middleware_register_endpoint_scope() {
+        let s = state();
+        let body = r#"{"name":"ep-mw","scope":"GET:/health","before":"log"}"#;
+        let resp = rs("POST", "/api/v1/middleware", body, &s);
+        assert!(resp.contains("200"), "got: {resp}");
+        let list = rs("GET", "/api/v1/middleware", "", &s);
+        assert!(list.contains("GET:/health"), "got: {list}");
+    }
+
+    #[test]
+    fn middleware_remove() {
+        let s = state();
+        rs("POST", "/api/v1/middleware",
+           r#"{"name":"to-remove","scope":"global","before":"log"}"#, &s);
+        let del = rs("DELETE", "/api/v1/middleware", r#"{"name":"to-remove"}"#, &s);
+        assert!(del.contains("200"),       "got: {del}");
+        assert!(del.contains("to-remove"), "got: {del}");
+        let list = rs("GET", "/api/v1/middleware", "", &s);
+        assert!(!list.contains("to-remove"), "still present after remove: {list}");
+    }
+
+    #[test]
+    fn middleware_remove_not_found() {
+        let resp = r("DELETE", "/api/v1/middleware", r#"{"name":"nonexistent"}"#);
+        assert!(resp.contains("404"), "got: {resp}");
+    }
+
+    #[test]
+    fn middleware_register_replaces_existing() {
+        let s = state();
+        rs("POST", "/api/v1/middleware",
+           r#"{"name":"dup","scope":"global","before":"log"}"#, &s);
+        rs("POST", "/api/v1/middleware",
+           r#"{"name":"dup","scope":"service:api","before":"log"}"#, &s);
+        // Should still only have one entry named "dup"
+        let list = rs("GET", "/api/v1/middleware", "", &s);
+        assert_eq!(list.matches("\"name\":\"dup\"").count(), 1,
+            "expected exactly one entry, got: {list}");
+    }
+
+    #[test]
+    fn middleware_reject_hook_short_circuits() {
+        let s = state();
+        let body = r#"{"name":"blocker","scope":"global","before":"reject:403:forbidden"}"#;
+        rs("POST", "/api/v1/middleware", body, &s);
+        // /api/v1/metrics is protected by our new middleware
+        let resp = route(&fake_req("GET", "/api/v1/metrics", ""), &s, "r1");
+        assert!(resp.contains("403"), "expected 403, got: {resp}");
+    }
+
+    #[test]
+    fn middleware_after_header_hook_injects_header() {
+        let s = state();
+        let body = r#"{"name":"tagger","scope":"global","after":"header:X-Test:hello"}"#;
+        rs("POST", "/api/v1/middleware", body, &s);
+        let resp = route(&fake_req("GET", "/health", ""), &s, "r1");
+        assert!(resp.contains("X-Test"), "expected X-Test header, got: {resp}");
+        assert!(resp.contains("hello"),  "got: {resp}");
+    }
+
+    #[test]
+    fn middleware_register_missing_name() {
+        let resp = r("POST", "/api/v1/middleware", r#"{"scope":"global"}"#);
+        assert!(resp.contains("400"), "got: {resp}");
+    }
+
+    #[test]
+    fn middleware_register_invalid_scope() {
+        let resp = r("POST", "/api/v1/middleware",
+                     r#"{"name":"x","scope":"bad-scope"}"#);
+        assert!(resp.contains("400"), "got: {resp}");
+    }
+
+    #[test]
+    fn parse_scope_global() {
+        assert_eq!(parse_scope("global").unwrap(), Scope::Global);
+    }
+
+    #[test]
+    fn parse_scope_service() {
+        assert_eq!(parse_scope("service:users").unwrap(),
+                   Scope::Service("users".into()));
+    }
+
+    #[test]
+    fn parse_scope_endpoint() {
+        let s = parse_scope("DELETE:/items/1").unwrap();
+        assert_eq!(s, Scope::Endpoint { method: "DELETE".into(), path: "/items/1".into() });
     }
 }

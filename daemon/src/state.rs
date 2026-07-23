@@ -12,6 +12,7 @@ use db::Db;
 use protocol::DaemonMode;
 
 use crate::metrics::Registry as MetricsRegistry;
+use crate::middleware::MiddlewareRegistry;
 use crate::pubsub::Broker;
 use crate::secrets::SecretsRegistry;
 use crate::streaming::StreamRegistry;
@@ -165,6 +166,8 @@ pub struct State {
     pub secrets:           SecretsRegistry,
     /// Streaming endpoints registry.
     pub streams:           StreamRegistry,
+    /// Middleware registry.
+    pub middleware:        MiddlewareRegistry,
     /// Monotonically increasing trace ID counter.
     trace_counter:         u64,
     /// RNG state for sampling (simple LCG).
@@ -195,6 +198,7 @@ impl State {
             pubsub:            Broker::new(),
             secrets:           SecretsRegistry::new(),
             streams:           StreamRegistry::new(),
+            middleware:        MiddlewareRegistry::new(),
             trace_counter:     0,
             rng_state:         12345678901234567,
         }
