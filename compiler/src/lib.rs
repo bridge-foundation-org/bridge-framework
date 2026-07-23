@@ -184,7 +184,364 @@ impl BridgeFile {
     }
 }
 
+// ── Rich error types ─────────────────────────────────────────────────────────
+
+/// A structured parse error with source context and an optional fix hint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseError {
+    /// Numeric error code (E0001 – E0010).
+    pub code: &'static str,
+    /// 1-based line number where the error occurred.
+    pub line: usize,
+    /// 1-based column of the offending token (0 if unknown).
+    pub column: usize,
+    /// Short human-readable description.
+    pub message: String,
+    /// The source line text (for display with a caret).
+    pub snippet: String,
+    /// Suggested fix shown after the error.
+    pub hint: Option<String>,
+}
+
+impl ParseError {
+    fn new(
+        code: &'static str,
+        line: usize,
+        message: impl Into<String>,
+        snippet: impl Into<String>,
+        hint: Option<&'static str>,
+    ) -> Self {
+        ParseError {
+            code,
+            line,
+            column: 0,
+            message: message.into(),
+            snippet: snippet.into(),
+            hint: hint.map(str::to_string),
+        }
+    }
+
+    fn new_hint(
+        code: &'static str,
+        line: usize,
+        message: impl Into<String>,
+        snippet: impl Into<String>,
+        hint: impl Into<String>,
+    ) -> Self {
+        ParseError {
+            code,
+            line,
+            column: 0,
+            message: message.into(),
+            snippet: snippet.into(),
+            hint: Some(hint.into()),
+        }
+    }
+
+    fn with_column(mut self, col: usize) -> Self {
+        self.column = col;
+        self
+    }
+
+    /// Format a Rust-compiler-style error message.
+    ///
+    /// ```text
+    /// error[E0001]: unknown HTTP method: FETCH
+    ///   --> api.bridge:3:14
+    ///    |
+    ///  3 | endpoint list FETCH /users
+    ///    |               ^^^^^ unknown method
+    ///    |
+    ///    = hint: valid methods are GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+    /// ```
+    pub fn display(&self, filename: &str) -> String {
+        let mut out = format!("error[{}]: {}\n", self.code, self.message);
+        if self.column > 0 {
+            out.push_str(&format!("  --> {}:{}:{}\n", filename, self.line, self.column));
+        } else {
+            out.push_str(&format!("  --> {}:{}\n", filename, self.line));
+        }
+        if !self.snippet.is_empty() {
+            let lineno_str = self.line.to_string();
+            let pad = " ".repeat(lineno_str.len());
+            out.push_str(&format!("   {pad}|\n"));
+            out.push_str(&format!(" {lineno_str} | {}\n", self.snippet));
+            out.push_str(&format!("   {pad}|\n"));
+        }
+        if let Some(hint) = &self.hint {
+            out.push_str(&format!("   = hint: {hint}\n"));
+        }
+        out
+    }
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "error[{}] line {}: {}", self.code, self.line, self.message)
+    }
+}
+
 // ── Parser ────────────────────────────────────────────────────────────────────
+
+/// Parse a `.bridge` source string with rich structured errors.
+///
+/// Returns a `BridgeFile` on success, or a `Vec<ParseError>` (one per
+/// problem) on failure.
+pub fn parse_with_errors(source: &str) -> Result<BridgeFile, Vec<ParseError>> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut errors: Vec<ParseError> = Vec::new();
+    let mut file = BridgeFile::default();
+    let mut current: Option<Service> = None;
+
+    for (idx, raw) in lines.iter().enumerate() {
+        let lineno = idx + 1; // 1-based
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+            continue;
+        }
+
+        let mut tokens = line.split_whitespace();
+        let keyword = tokens.next().unwrap_or("");
+
+        match keyword {
+            "service" => {
+                if let Some(svc) = current.take() {
+                    if let Err(e) = check_service(&svc, lineno, raw) {
+                        errors.push(e);
+                    }
+                    file.services.push(svc);
+                }
+                match tokens.next() {
+                    None => errors.push(ParseError::new(
+                        "E0010",
+                        lineno,
+                        "'service' requires a name",
+                        raw.trim(),
+                        Some("write: service <name>"),
+                    )),
+                    Some(name) => {
+                        current = Some(Service {
+                            name: name.to_string(),
+                            auth: Auth::None,
+                            middleware: Vec::new(),
+                            endpoints: Vec::new(),
+                        });
+                    }
+                }
+            }
+
+            "auth" => {
+                match tokens.next() {
+                    None => errors.push(ParseError::new(
+                        "E0005",
+                        lineno,
+                        "'auth' requires a scheme",
+                        raw.trim(),
+                        Some("valid schemes: none | bearer | api_key"),
+                    )),
+                    Some(s) => match Auth::parse(s) {
+                        Err(msg) => errors.push(ParseError::new(
+                            "E0005",
+                            lineno,
+                            msg,
+                            raw.trim(),
+                            Some("valid schemes: none | bearer | api_key"),
+                        )),
+                        Ok(auth) => match &mut current {
+                            Some(svc) => svc.auth = auth,
+                            None => errors.push(ParseError::new(
+                                "E0008",
+                                lineno,
+                                "'auth' must appear inside a service block",
+                                raw.trim(),
+                                Some("add a 'service <name>' line before this"),
+                            )),
+                        },
+                    },
+                }
+            }
+
+            "middleware" => {
+                let names: Vec<String> = tokens.map(str::to_string).collect();
+                if names.is_empty() {
+                    errors.push(ParseError::new(
+                        "E0008",
+                        lineno,
+                        "'middleware' requires at least one name",
+                        raw.trim(),
+                        Some("write: middleware <name> [name ...]"),
+                    ));
+                } else {
+                    match &mut current {
+                        Some(svc) => svc.middleware.extend(names),
+                        None => errors.push(ParseError::new(
+                            "E0008",
+                            lineno,
+                            "'middleware' must appear inside a service block",
+                            raw.trim(),
+                            Some("add a 'service <name>' line before this"),
+                        )),
+                    }
+                }
+            }
+
+            "endpoint" => {
+                let name = tokens.next();
+                let method_str = name.and_then(|_| tokens.next());
+                let path = method_str.and_then(|_| tokens.next());
+
+                match (name, method_str, path) {
+                    (Some(name), Some(method_str), Some(path)) => {
+                        match Method::parse(method_str) {
+                            Err(_) => errors.push(ParseError::new(
+                                "E0001",
+                                lineno,
+                                format!("unknown HTTP method '{method_str}'"),
+                                raw.trim(),
+                                Some("valid methods: GET POST PUT PATCH DELETE HEAD OPTIONS"),
+                            )),
+                            Ok(method) => {
+                                if !path.starts_with('/') {
+                                    errors.push(ParseError::new_hint(
+                                        "E0002",
+                                        lineno,
+                                        format!("path must start with '/' (got '{path}')"),
+                                        raw.trim(),
+                                        format!("change to '/{path}'"),
+                                    ));
+                                }
+                                let mut ep_auth: Option<Auth> = None;
+                                let mut tags: Vec<String> = Vec::new();
+                                for qual in tokens {
+                                    if let Some(scheme) = qual.strip_prefix("auth=") {
+                                        match Auth::parse(scheme) {
+                                            Ok(a) => ep_auth = Some(a),
+                                            Err(msg) => errors.push(ParseError::new(
+                                                "E0005",
+                                                lineno,
+                                                msg,
+                                                raw.trim(),
+                                                Some("valid schemes: none | bearer | api_key"),
+                                            )),
+                                        }
+                                    } else if let Some(tag_list) = qual.strip_prefix("tags=") {
+                                        tags.extend(tag_list.split(',').map(str::to_string));
+                                    }
+                                }
+                                match &mut current {
+                                    Some(svc) => svc.endpoints.push(Endpoint {
+                                        name: name.to_string(),
+                                        method,
+                                        path: path.to_string(),
+                                        auth: ep_auth,
+                                        tags,
+                                    }),
+                                    None => errors.push(ParseError::new(
+                                        "E0007",
+                                        lineno,
+                                        "'endpoint' must appear inside a service block",
+                                        raw.trim(),
+                                        Some("add a 'service <name>' line before this"),
+                                    )),
+                                }
+                            }
+                        }
+                    }
+                    _ => errors.push(ParseError::new(
+                        "E0001",
+                        lineno,
+                        format!("endpoint '{}' is missing method and/or path", name.unwrap_or("?")),
+                        raw.trim(),
+                        Some("write: endpoint <name> <METHOD> <path>"),
+                    )),
+                }
+            }
+
+            other => errors.push(ParseError::new(
+                "E0001",
+                lineno,
+                format!("unrecognised keyword '{other}'"),
+                raw.trim(),
+                Some("valid keywords: service, endpoint, auth, middleware"),
+            )),
+        }
+    }
+
+    // Flush last service
+    if let Some(svc) = current.take() {
+        if let Err(e) = check_service(&svc, lines.len(), lines.last().copied().unwrap_or("")) {
+            errors.push(e);
+        }
+        file.services.push(svc);
+    }
+
+    if file.services.is_empty() && errors.is_empty() {
+        errors.push(ParseError::new(
+            "E0003",
+            1,
+            "no services found — file must contain at least one 'service' block",
+            "",
+            Some("start with: service <name>"),
+        ));
+    }
+
+    // Duplicate service names
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for svc in &file.services {
+        if let Some(prev) = seen.get(&svc.name) {
+            errors.push(ParseError::new(
+                "E0003",
+                0,
+                format!("duplicate service name '{}' (first defined at line {})", svc.name, prev),
+                "",
+                None,
+            ));
+        } else {
+            seen.insert(svc.name.clone(), 0);
+        }
+    }
+
+    if errors.is_empty() { Ok(file) } else { Err(errors) }
+}
+
+/// Helper to check a completed service block for internal errors.
+fn check_service(svc: &Service, _lineno: usize, _raw: &str) -> Result<(), ParseError> {
+    if svc.endpoints.is_empty() {
+        return Err(ParseError::new_hint(
+            "E0009",
+            0,
+            format!("service '{}' has no endpoints — add at least one 'endpoint' line", svc.name),
+            "",
+            format!("add: endpoint <name> GET /{}", svc.name),
+        ));
+    }
+    let mut seen_names = std::collections::HashSet::new();
+    for ep in &svc.endpoints {
+        if !seen_names.insert(&ep.name) {
+            return Err(ParseError::new(
+                "E0004",
+                0,
+                format!("service '{}': duplicate endpoint name '{}'", svc.name, ep.name),
+                "",
+                None,
+            ));
+        }
+    }
+    let mut seen_routes = std::collections::HashSet::new();
+    for ep in &svc.endpoints {
+        let key = format!("{} {}", ep.method.as_str(), ep.path);
+        if !seen_routes.insert(key.clone()) {
+            return Err(ParseError::new(
+                "E0006",
+                0,
+                format!("service '{}': conflicting route '{}' — two endpoints share the same method and path", svc.name, key),
+                "",
+                Some("use a different path or method for one of the endpoints"),
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Parse a `.bridge` source string.
 ///
@@ -671,4 +1028,62 @@ mod tests {
         let file = parse(src).unwrap();
         assert_eq!(file.endpoint_count(), 3);
     }
+
+    // ── parse_with_errors rich diagnostics ────────────────────────────────────
+
+    #[test]
+    fn parse_with_errors_success() {
+        let src = "service users\nendpoint list GET /users\n";
+        let file = parse_with_errors(src).unwrap();
+        assert_eq!(file.services[0].name, "users");
+    }
+
+    #[test]
+    fn parse_with_errors_bad_method() {
+        let errs = parse_with_errors("service s\nendpoint e FETCH /path\n").unwrap_err();
+        assert_eq!(errs[0].code, "E0001");
+        assert!(errs[0].message.contains("FETCH"));
+        assert!(errs[0].hint.is_some());
+    }
+
+    #[test]
+    fn parse_with_errors_bad_path() {
+        let errs = parse_with_errors("service s\nendpoint e GET noslash\n").unwrap_err();
+        assert_eq!(errs[0].code, "E0002");
+        assert!(errs[0].hint.as_deref().unwrap().contains("/noslash"));
+    }
+
+    #[test]
+    fn parse_with_errors_missing_service_name() {
+        let errs = parse_with_errors("service\nendpoint e GET /p\n").unwrap_err();
+        assert_eq!(errs[0].code, "E0010");
+    }
+
+    #[test]
+    fn parse_with_errors_endpoint_outside_service() {
+        let errs = parse_with_errors("endpoint e GET /p\n").unwrap_err();
+        assert_eq!(errs[0].code, "E0007");
+    }
+
+    #[test]
+    fn parse_with_errors_auth_outside_service() {
+        let errs = parse_with_errors("auth bearer\nservice s\nendpoint e GET /p\n").unwrap_err();
+        assert_eq!(errs[0].code, "E0008");
+    }
+
+    #[test]
+    fn parse_with_errors_display_format() {
+        let errs = parse_with_errors("service s\nendpoint e INVALID /p\n").unwrap_err();
+        let display = errs[0].display("app.bridge");
+        assert!(display.contains("error[E0001]"));
+        assert!(display.contains("app.bridge"));
+        assert!(display.contains("INVALID"));
+    }
+
+    #[test]
+    fn parse_with_errors_empty_source() {
+        let errs = parse_with_errors("").unwrap_err();
+        assert_eq!(errs[0].code, "E0003");
+    }
+
 }

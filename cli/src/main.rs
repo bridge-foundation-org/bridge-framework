@@ -36,11 +36,16 @@ fn main() {
         "--help" | "-h" | "help" => { print_usage(); return; }
         "version" => { println!("{VERSION}"); return; }
         "init" => {
-            if args.len() != 2 { die("usage: bridge init <project-dir>"); }
-            match init_project(&args[1]) {
+            if args.len() < 2 { die("usage: bridge init <project-dir> [--template <default|rest-api-auth>]"); }
+            let dir = &args[1];
+            let template = args.windows(2)
+                .find(|w| w[0] == "--template")
+                .map(|w| w[1].as_str())
+                .unwrap_or("default");
+            match init_project(dir, template) {
                 Ok(()) => {
-                    println!("{} Bridge project created: {}", green("✓"), bold(&args[1]));
-                    println!("  {} cd {} && cargo run -p daemon", dim("→"), &args[1]);
+                    println!("{} Bridge project created: {}", green("✓"), bold(dir));
+                    println!("  {} cd {} && cargo run -p daemon", dim("→"), dir);
                 }
                 Err(e) => die(&e),
             }
@@ -174,10 +179,14 @@ fn pretty_list(s: &str) -> String {
 
 fn print_completions(shell: &str) {
     match shell {
-        "bash" => print!("{BASH_COMPLETION}"),
-        "zsh"  => print!("{ZSH_COMPLETION}"),
-        "fish" => print!("{FISH_COMPLETION}"),
-        other  => { eprintln!("{} unknown shell: {other} (use: bash zsh fish)", red("error:")); process::exit(1); }
+        "bash"       => print!("{BASH_COMPLETION}"),
+        "zsh"        => print!("{ZSH_COMPLETION}"),
+        "fish"       => print!("{FISH_COMPLETION}"),
+        "powershell" | "pwsh" => print!("{POWERSHELL_COMPLETION}"),
+        other  => {
+            eprintln!("{} unknown shell: {other} (use: bash zsh fish powershell)", red("error:"));
+            process::exit(1);
+        }
     }
 }
 
@@ -225,8 +234,103 @@ for cmd in init ping version health stop mode-get mode-set compile compile-file 
   complete -c bridge -f -a $cmd
 end
 complete -c bridge -n '__fish_seen_subcommand_from mode-set' -a 'lite full ultra off'
-complete -c bridge -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'
+complete -c bridge -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish powershell'
 ";
+
+const POWERSHELL_COMPLETION: &str = r#"# Bridge CLI PowerShell completion
+# Add to your $PROFILE:
+#   bridge completions powershell | Out-String | Invoke-Expression
+#
+# Or save to a file and dot-source it:
+#   bridge completions powershell > $HOME\bridge_completion.ps1
+#   . $HOME\bridge_completion.ps1
+
+Register-ArgumentCompleter -Native -CommandName bridge -ScriptBlock {
+    param($wordToComplete, $commandAst, $cursorPosition)
+
+    $commands = @(
+        [System.Management.Automation.CompletionResult]::new('init',          'init',          'ParameterValue', 'Scaffold a new project')
+        [System.Management.Automation.CompletionResult]::new('ping',          'ping',          'ParameterValue', 'Check daemon health')
+        [System.Management.Automation.CompletionResult]::new('health',        'health',        'ParameterValue', 'Full health report')
+        [System.Management.Automation.CompletionResult]::new('version',       'version',       'ParameterValue', 'Show version')
+        [System.Management.Automation.CompletionResult]::new('stop',          'stop',          'ParameterValue', 'Stop the daemon')
+        [System.Management.Automation.CompletionResult]::new('mode-get',      'mode-get',      'ParameterValue', 'Get current mode')
+        [System.Management.Automation.CompletionResult]::new('mode-set',      'mode-set',      'ParameterValue', 'Set daemon mode')
+        [System.Management.Automation.CompletionResult]::new('compile',       'compile',       'ParameterValue', 'Compile Bridge DSL inline')
+        [System.Management.Automation.CompletionResult]::new('compile-file',  'compile-file',  'ParameterValue', 'Compile .bridge file')
+        [System.Management.Automation.CompletionResult]::new('services',      'services',      'ParameterValue', 'List registered services')
+        [System.Management.Automation.CompletionResult]::new('routes',        'routes',        'ParameterValue', 'List all routes')
+        [System.Management.Automation.CompletionResult]::new('auth-set',      'auth-set',      'ParameterValue', 'Set auth token')
+        [System.Management.Automation.CompletionResult]::new('auth-clear',    'auth-clear',    'ParameterValue', 'Clear auth token')
+        [System.Management.Automation.CompletionResult]::new('auth-status',   'auth-status',   'ParameterValue', 'Show auth status')
+        [System.Management.Automation.CompletionResult]::new('db-put',        'db-put',        'ParameterValue', 'Store a KV value')
+        [System.Management.Automation.CompletionResult]::new('db-get',        'db-get',        'ParameterValue', 'Get a KV value')
+        [System.Management.Automation.CompletionResult]::new('db-del',        'db-del',        'ParameterValue', 'Delete a KV value')
+        [System.Management.Automation.CompletionResult]::new('db-keys',       'db-keys',       'ParameterValue', 'List KV keys')
+        [System.Management.Automation.CompletionResult]::new('db-flush',      'db-flush',      'ParameterValue', 'Flush a namespace')
+        [System.Management.Automation.CompletionResult]::new('pg-create',     'pg-create',     'ParameterValue', 'Create Postgres container')
+        [System.Management.Automation.CompletionResult]::new('pg-status',     'pg-status',     'ParameterValue', 'Postgres container status')
+        [System.Management.Automation.CompletionResult]::new('pg-migrate',    'pg-migrate',    'ParameterValue', 'Run SQL migration')
+        [System.Management.Automation.CompletionResult]::new('pg-destroy',    'pg-destroy',    'ParameterValue', 'Remove Postgres container')
+        [System.Management.Automation.CompletionResult]::new('redis-status',  'redis-status',  'ParameterValue', 'Miniredis status')
+        [System.Management.Automation.CompletionResult]::new('redis-ping',    'redis-ping',    'ParameterValue', 'Ping miniredis')
+        [System.Management.Automation.CompletionResult]::new('redis-get',     'redis-get',     'ParameterValue', 'Get a Redis key')
+        [System.Management.Automation.CompletionResult]::new('redis-set',     'redis-set',     'ParameterValue', 'Set a Redis key')
+        [System.Management.Automation.CompletionResult]::new('redis-del',     'redis-del',     'ParameterValue', 'Delete a Redis key')
+        [System.Management.Automation.CompletionResult]::new('redis-keys',    'redis-keys',    'ParameterValue', 'List Redis keys')
+        [System.Management.Automation.CompletionResult]::new('redis-flush',   'redis-flush',   'ParameterValue', 'Flush all Redis keys')
+        [System.Management.Automation.CompletionResult]::new('trace-list',    'trace-list',    'ParameterValue', 'List recent traces')
+        [System.Management.Automation.CompletionResult]::new('trace-get',     'trace-get',     'ParameterValue', 'Get a specific trace')
+        [System.Management.Automation.CompletionResult]::new('trace-clear',   'trace-clear',   'ParameterValue', 'Clear all traces')
+        [System.Management.Automation.CompletionResult]::new('trace-export',  'trace-export',  'ParameterValue', 'Export traces')
+        [System.Management.Automation.CompletionResult]::new('metrics',       'metrics',       'ParameterValue', 'Show metrics summary')
+        [System.Management.Automation.CompletionResult]::new('metrics-clear', 'metrics-clear', 'ParameterValue', 'Reset metrics')
+        [System.Management.Automation.CompletionResult]::new('completions',   'completions',   'ParameterValue', 'Print shell completion script')
+        [System.Management.Automation.CompletionResult]::new('raw',           'raw',           'ParameterValue', 'Send raw TCP command')
+    )
+
+    # Sub-completions for specific commands
+    $tokens = $commandAst.CommandElements
+    if ($tokens.Count -ge 2) {
+        $subCmd = $tokens[1].ToString()
+        switch ($subCmd) {
+            'mode-set' {
+                return @('lite','full','ultra','off') |
+                    Where-Object { $_ -like "$wordToComplete*" } |
+                    ForEach-Object {
+                        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', "mode: $_")
+                    }
+            }
+            'completions' {
+                return @('bash','zsh','fish','powershell') |
+                    Where-Object { $_ -like "$wordToComplete*" } |
+                    ForEach-Object {
+                        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', "$_ shell completions")
+                    }
+            }
+            'trace-export' {
+                return @('json','csv','text') |
+                    Where-Object { $_ -like "$wordToComplete*" } |
+                    ForEach-Object {
+                        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', "export format: $_")
+                    }
+            }
+            'auth-set' {
+                if ($tokens.Count -eq 2) {
+                    return @('bearer','api_key') |
+                        Where-Object { $_ -like "$wordToComplete*" } |
+                        ForEach-Object {
+                            [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', "auth scheme: $_")
+                        }
+                }
+            }
+        }
+    }
+
+    # Top-level command completion
+    $commands | Where-Object { $_.CompletionText -like "$wordToComplete*" }
+}
+"#;
 
 // ── TCP helpers ───────────────────────────────────────────────────────────────
 
@@ -262,23 +366,27 @@ fn need_min(args: &[String], n: usize, hint: &str) {
 
 // ── Project scaffold ──────────────────────────────────────────────────────────
 
-fn init_project(dir: &str) -> Result<(), String> {
+fn init_project(dir: &str, template: &str) -> Result<(), String> {
     let p = std::path::Path::new(dir);
     if p.exists() { return Err(format!("'{dir}' already exists")); }
     fs::create_dir_all(p).map_err(|e| format!("create dir: {e}"))?;
+    match template {
+        "rest-api-auth" => init_rest_api_auth(p, dir),
+        "default" | _   => init_default(p, dir),
+    }
+}
 
-    // app.bridge — sample service definition
+// ── Template: default (minimal) ──────────────────────────────────────────────
+
+fn init_default(p: &std::path::Path, dir: &str) -> Result<(), String> {
+    // app.bridge
     fs::write(p.join("app.bridge"),
         "# My Bridge application\n\nservice hello\n  endpoint ping GET /ping\n  endpoint echo POST /echo\n"
     ).map_err(|e| format!("write app.bridge: {e}"))?;
 
-    // bridge.toml — project configuration
-    let project_name = std::path::Path::new(dir)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(dir);
-    let toml = default_bridge_toml(project_name);
-    fs::write(p.join("bridge.toml"), toml)
+    // bridge.toml
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or(dir);
+    fs::write(p.join("bridge.toml"), default_bridge_toml(name))
         .map_err(|e| format!("write bridge.toml: {e}"))?;
 
     // README.md
@@ -287,6 +395,278 @@ fn init_project(dir: &str) -> Result<(), String> {
     ).map_err(|e| format!("write README: {e}"))?;
 
     Ok(())
+}
+
+// ── Template: rest-api-auth (REST API with bearer auth + Postgres) ────────────
+
+fn init_rest_api_auth(p: &std::path::Path, dir: &str) -> Result<(), String> {
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or(dir);
+
+    // app.bridge — multi-service with auth and DB-backed routes
+    fs::write(p.join("app.bridge"), REST_API_AUTH_BRIDGE)
+        .map_err(|e| format!("write app.bridge: {e}"))?;
+
+    // bridge.toml
+    fs::write(p.join("bridge.toml"), rest_api_auth_toml(name))
+        .map_err(|e| format!("write bridge.toml: {e}"))?;
+
+    // migrations/
+    fs::create_dir_all(p.join("migrations")).map_err(|e| format!("mkdir migrations: {e}"))?;
+    fs::write(p.join("migrations").join("001_init.sql"), REST_API_AUTH_MIGRATION)
+        .map_err(|e| format!("write migrations/001_init.sql: {e}"))?;
+
+    // .env.example
+    fs::write(p.join(".env.example"), REST_API_AUTH_ENV)
+        .map_err(|e| format!("write .env.example: {e}"))?;
+
+    // README.md
+    fs::write(p.join("README.md"), rest_api_auth_readme(dir))
+        .map_err(|e| format!("write README.md: {e}"))?;
+
+    Ok(())
+}
+
+const REST_API_AUTH_BRIDGE: &str = r#"# REST API with Bearer auth and PostgreSQL
+# Generated by: bridge init <dir> --template rest-api-auth
+
+# ── Public endpoints (no auth required) ──────────────────────────────────────
+service public
+endpoint health GET /health
+endpoint version GET /api/version
+
+# ── Auth service (issues and validates tokens) ────────────────────────────────
+service auth
+endpoint login  POST /auth/login
+endpoint logout POST /auth/logout
+endpoint refresh POST /auth/refresh
+
+# ── Users service (requires bearer token) ────────────────────────────────────
+service users
+auth bearer
+middleware log rate_limit
+endpoint list   GET    /api/v1/users
+endpoint get    GET    /api/v1/users/:id
+endpoint create POST   /api/v1/users
+endpoint update PUT    /api/v1/users/:id
+endpoint delete DELETE /api/v1/users/:id
+endpoint me     GET    /api/v1/users/me
+
+# ── Items service (requires bearer token) ────────────────────────────────────
+service items
+auth bearer
+middleware log
+endpoint list   GET    /api/v1/items
+endpoint get    GET    /api/v1/items/:id
+endpoint create POST   /api/v1/items
+endpoint update PUT    /api/v1/items/:id
+endpoint delete DELETE /api/v1/items/:id
+endpoint search GET    /api/v1/items/search
+"#;
+
+const REST_API_AUTH_MIGRATION: &str = r#"-- 001_init.sql — Initial schema
+-- Run with: bridge pg-migrate migrations/001_init.sql
+
+CREATE SCHEMA IF NOT EXISTS app;
+
+-- Users
+CREATE TABLE IF NOT EXISTS app.users (
+    id         SERIAL PRIMARY KEY,
+    email      TEXT UNIQUE NOT NULL,
+    name       TEXT NOT NULL,
+    role       TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'admin'
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Auth tokens
+CREATE TABLE IF NOT EXISTS app.tokens (
+    id         SERIAL PRIMARY KEY,
+    user_id    INTEGER REFERENCES app.users(id) ON DELETE CASCADE,
+    token      TEXT UNIQUE NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Items
+CREATE TABLE IF NOT EXISTS app.items (
+    id          SERIAL PRIMARY KEY,
+    owner_id    INTEGER REFERENCES app.users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    description TEXT,
+    metadata    JSONB DEFAULT '{}',
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_tokens_token   ON app.tokens(token);
+CREATE INDEX IF NOT EXISTS idx_tokens_user    ON app.tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_items_owner    ON app.items(owner_id);
+
+-- Sample data
+INSERT INTO app.users (email, name, role) VALUES
+    ('admin@example.com', 'Admin User', 'admin'),
+    ('alice@example.com', 'Alice', 'user')
+ON CONFLICT (email) DO NOTHING;
+"#;
+
+const REST_API_AUTH_ENV: &str = r#"# .env.example — copy to .env and customise
+
+BRIDGE_TCP_ADDR=127.0.0.1:7878
+BRIDGE_HTTP_ADDR=127.0.0.1:8787
+BRIDGE_REDIS_ADDR=127.0.0.1:6399
+BRIDGE_MODE=full
+
+# PostgreSQL
+POSTGRES_USER=bridge
+POSTGRES_PASSWORD=bridge
+POSTGRES_DB=bridge_dev
+POSTGRES_PORT=5432
+DATABASE_URL=postgres://bridge:bridge@localhost:5432/bridge_dev
+
+# Auth
+BRIDGE_AUTH_SCHEME=bearer
+BRIDGE_AUTH_TOKEN=change-me-before-production
+"#;
+
+fn rest_api_auth_toml(name: &str) -> String {
+    format!(
+r#"# bridge.toml — REST API with Auth + DB
+
+[project]
+name    = "{name}"
+version = "0.1.0"
+
+[daemon]
+http_addr  = "127.0.0.1:8787"
+tcp_addr   = "127.0.0.1:7878"
+redis_addr = "127.0.0.1:6399"
+mode       = "full"
+
+[watch]
+enabled = true
+poll_ms = 500
+dirs    = ["."]
+files   = ["app.bridge"]
+
+[[middleware.rules]]
+name   = "log"
+scope  = "global"
+before = "log"
+
+[[middleware.rules]]
+name   = "powered-by"
+scope  = "global"
+after  = "header:X-Powered-By:bridge"
+
+# Rate limiting — 120 req/min on the public API
+[[ratelimit.rules]]
+method      = "*"
+path        = "/api/*"
+capacity    = 120
+refill_rate = 2.0
+
+# Tighter limit on auth endpoints
+[[ratelimit.rules]]
+method      = "POST"
+path        = "/auth/*"
+capacity    = 10
+refill_rate = 0.2
+"#
+    )
+}
+
+fn rest_api_auth_readme(dir: &str) -> String {
+    format!(
+r#"# {dir}
+
+REST API with Bearer auth and PostgreSQL — generated by Bridge Framework.
+
+## Quick start
+
+```bash
+# 1. Start the daemon
+cargo run -p daemon
+
+# 2. Create and migrate the database
+bridge pg-create {dir}
+bridge pg-migrate migrations/001_init.sql
+
+# 3. Compile the API definition
+bridge compile-file app.bridge
+
+# 4. Set a bearer token
+bridge auth-set bearer my-secret-token
+
+# 5. Test the API
+bridge ping
+curl http://localhost:8787/health
+curl -H "Authorization: Bearer my-secret-token" http://localhost:8787/api/v1/users
+```
+
+## Project structure
+
+```
+{dir}/
+├── app.bridge          # API definition (services + endpoints)
+├── bridge.toml         # Project configuration
+├── migrations/
+│   └── 001_init.sql    # Initial database schema
+└── .env.example        # Environment variable template
+```
+
+## Services
+
+| Service | Auth | Endpoints |
+|---------|------|-----------|
+| `public` | none | `GET /health`, `GET /api/version` |
+| `auth` | none | `POST /auth/login`, `/auth/logout`, `/auth/refresh` |
+| `users` | bearer | CRUD at `/api/v1/users` + `GET /me` |
+| `items` | bearer | CRUD at `/api/v1/items` + `GET /search` |
+
+## Adding a new endpoint
+
+Edit `app.bridge`:
+
+```bridge
+service users
+auth bearer
+endpoint list   GET  /api/v1/users
+endpoint get    GET  /api/v1/users/:id
+endpoint create POST /api/v1/users
+# add new endpoint:
+endpoint export GET  /api/v1/users/export tags=admin
+```
+
+Then recompile:
+
+```bash
+bridge compile-file app.bridge
+```
+
+## Database management
+
+```bash
+# Create container
+bridge pg-create {dir}
+
+# Run migration
+bridge pg-migrate migrations/001_init.sql
+
+# Check status
+bridge pg-status
+
+# Destroy (removes all data)
+bridge pg-destroy {dir}
+```
+
+## See also
+
+- [Bridge CLI Reference](https://github.com/bridge-framework)
+- `bridge help` for all available commands
+"#,
+        dir = dir
+    )
 }
 
 fn default_bridge_toml(name: &str) -> String {
@@ -338,7 +718,7 @@ fn print_usage() {
     g("ping",         "",                    "Check daemon health");
     g("health",       "",                    "Full health report (JSON)");
     g("version",      "",                    "Show version");
-    g("init",         "<dir>",               "Scaffold a new project");
+    g("init",         "<dir> [--template T]","Scaffold a new project (T: default|rest-api-auth)");
     g("stop",         "",                    "Stop the daemon");
     println!("\n{}", bold("MODE"));
     g("mode-get",     "",                    "Get current mode");
@@ -379,7 +759,7 @@ fn print_usage() {
     g("metrics",      "",                    "Show metrics summary");
     g("metrics-clear","",                    "Reset metrics");
     println!("\n{}", bold("SHELL COMPLETIONS"));
-    g("completions",  "<bash|zsh|fish>",     "Print completion script");
+    g("completions",  "<bash|zsh|fish|powershell>", "Print completion script");
     println!("\n{}", dim("--json    output raw JSON response"));
     println!("{}", dim("BRIDGE_TCP_ADDR   daemon address (default: 127.0.0.1:7878)"));
 }
@@ -458,7 +838,7 @@ mod tests {
     #[test] fn init_creates_files() {
         let dir = "test_init_tmp_bridge";
         let _ = fs::remove_dir_all(dir);
-        init_project(dir).expect("init failed");
+        init_project(dir, "default").expect("init failed");
         assert!(std::path::Path::new(dir).join("app.bridge").exists());
         assert!(std::path::Path::new(dir).join("bridge.toml").exists());
         assert!(std::path::Path::new(dir).join("README.md").exists());
@@ -481,6 +861,33 @@ mod tests {
 
     #[test] fn fish_completion_contains_commands() {
         assert!(FISH_COMPLETION.contains("ping"));
-        assert!(FISH_COMPLETION.contains("bash zsh fish"));
+        assert!(FISH_COMPLETION.contains("bash zsh fish powershell"));
+    }
+
+    #[test] fn powershell_completion_contains_commands() {
+        assert!(POWERSHELL_COMPLETION.contains("Register-ArgumentCompleter"));
+        assert!(POWERSHELL_COMPLETION.contains("ping"));
+        assert!(POWERSHELL_COMPLETION.contains("mode-set"));
+        assert!(POWERSHELL_COMPLETION.contains("lite"));
+    }
+
+    #[test] fn init_rest_api_auth_creates_files() {
+        let dir = "test_init_rest_api_auth_tmp";
+        let _ = fs::remove_dir_all(dir);
+        init_project(dir, "rest-api-auth").expect("rest-api-auth init failed");
+        let p = std::path::Path::new(dir);
+        assert!(p.join("app.bridge").exists(),              "app.bridge missing");
+        assert!(p.join("bridge.toml").exists(),             "bridge.toml missing");
+        assert!(p.join("README.md").exists(),               "README.md missing");
+        assert!(p.join(".env.example").exists(),            ".env.example missing");
+        assert!(p.join("migrations").join("001_init.sql").exists(), "migration missing");
+        // app.bridge should have auth bearer
+        let bridge = fs::read_to_string(p.join("app.bridge")).unwrap();
+        assert!(bridge.contains("auth bearer"), "should have bearer auth");
+        assert!(bridge.contains("service users"), "should have users service");
+        // migration should have CREATE TABLE
+        let sql = fs::read_to_string(p.join("migrations").join("001_init.sql")).unwrap();
+        assert!(sql.contains("CREATE TABLE"), "migration should have CREATE TABLE");
+        fs::remove_dir_all(dir).ok();
     }
 }

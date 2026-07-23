@@ -1,289 +1,184 @@
-# Bridge Protocol
+# protocol — Bridge Wire Protocol
 
-Shared protocol definitions used by CLI and daemon for communication.
+Shared command/response types used by both the CLI and the daemon.
 
 ## Overview
 
-The protocol crate defines:
-- **Commands** — Operations the daemon can perform
-- **Responses** — Results returned to clients
-- **Parsing** — Command string → structured type
-- **Rendering** — Structured type → response string
-- **Encoding** — URL-style encoding for newlines/spaces
+The `protocol` crate defines the message types that flow over the TCP connection between `bridge` CLI and `bridged` daemon. It also provides:
 
-## Architecture
+- `Command` / `Response` enums covering all operations
+- Rich types for traces, metrics, auth, and structured errors
+- Percent-encode/decode helpers for safe binary-over-line transport
+- `parse_command(line: &str) → Option<Command>` — one-line parser used by the daemon
 
-```
-┌─────────┐                  ┌─────────┐
-│   CLI   │ ─── Command ───► │ Daemon  │
-└─────────┘                  └─────────┘
-            ◄── Response ───
-```
+**Protocol:** Line-oriented text over TCP. Each command or response is a single `\n`-terminated UTF-8 line with percent-encoded payloads.
 
-Both sides use the same protocol crate for consistency.
+## Response Prefixes
 
-## Command Types
+| Prefix | Meaning | Example |
+|--------|---------|---------|
+| `PONG` | Ping reply | `PONG` |
+| `OK …` | Success, optional note | `OK compiled successfully` |
+| `DATA …` | Encoded payload | `DATA %7B%22services%22%3A%5B%5D%7D` |
+| `ERR …` | Error message | `ERR connection refused` |
+| `MODE …` | Current daemon mode | `MODE full` |
+| `TRACE …` | Trace data (JSON) | `TRACE %7B%22id%22%3A%22abc%22%7D` |
+| `METRIC …` | Metric data point | `METRIC counter=http_requests value=42` |
+
+## Command Reference
+
+### Core
+
+| Command | TCP line | Description |
+|---------|----------|-------------|
+| `Ping` | `PING` | Health check |
+| `Version` | `VERSION` | Get daemon version |
+| `Stop` | `STOP` | Shutdown daemon |
+| `ModeGet` | `MODE_GET` | Get current mode |
+| `ModeSet(mode)` | `MODE_SET <mode>` | Set mode (`lite|full|ultra|off`) |
+
+### Compilation
+
+| Command | TCP line | Description |
+|---------|----------|-------------|
+| `Compile(source)` | `COMPILE <encoded>` | Compile inline source |
+| `CompileFile(path)` | `COMPILE_FILE <path>` | Compile file at path |
+
+### Database
+
+| Command | TCP line | Description |
+|---------|----------|-------------|
+| `DbCreate(name)` | `DB_CREATE <name>` | Create Postgres container |
+| `DbStatus` | `DB_STATUS` | Get container status |
+| `DbMigrate(name, sql)` | `DB_MIGRATE <name> <encoded>` | Run SQL migration |
+| `DbDestroy(name)` | `DB_DESTROY <name>` | Remove container |
+
+### Redis / Cache
+
+| Command | TCP line | Description |
+|---------|----------|-------------|
+| `RedisStatus` | `REDIS_STATUS` | Check miniredis status |
+| `RedisGet(key)` | `REDIS_GET <key>` | Get a key |
+| `RedisSet(key, val)` | `REDIS_SET <key> <encoded>` | Set a key |
+| `RedisDel(key)` | `REDIS_DEL <key>` | Delete a key |
+| `RedisKeys(pattern)` | `REDIS_KEYS <pattern>` | List keys |
+
+### Auth
+
+| Command | TCP line | Description |
+|---------|----------|-------------|
+| `AuthSet(scheme, token)` | `AUTH_SET <scheme> <encoded>` | Set auth token |
+| `AuthGet` | `AUTH_GET` | Get current auth config |
+| `AuthClear` | `AUTH_CLEAR` | Remove auth token |
+
+### Tracing
+
+| Command | TCP line | Description |
+|---------|----------|-------------|
+| `TraceList` | `TRACE_LIST` | List recent traces |
+| `TraceGet(id)` | `TRACE_GET <id>` | Get trace by ID |
+| `TraceExport(fmt)` | `TRACE_EXPORT <format>` | Export traces (json|prometheus) |
+| `TraceClear` | `TRACE_CLEAR` | Clear trace buffer |
+
+### Metrics
+
+| Command | TCP line | Description |
+|---------|----------|-------------|
+| `MetricsList` | `METRICS_LIST` | List all metrics |
+| `MetricsGet(name)` | `METRICS_GET <name>` | Get metric by name |
+| `MetricsReset` | `METRICS_RESET` | Reset all counters |
+
+## API Reference
+
+### `parse_command(line: &str) → Option<Command>`
+
+Parses a single TCP line into a `Command`. Returns `None` for empty/unknown lines. Used by `daemon/tcp.rs`.
 
 ```rust
-pub enum Command {
-    // Basic
-    Ping,
-    Help,
-    Stop,
-    
-    // Mode
-    GetMode,
-    SetMode(String),
-    
-    // Compilation
-    Compile { source: String },
-    
-    // Key-value storage
-    DbPut { namespace: String, key: String, value: String },
-    DbGet { namespace: String, key: String },
-    
-    // Docker Postgres
-    DbCreate { name: String },
-    DbStatus,
-    DbMigrate { sql: String },
-    DbDestroy { name: String },
-    
-    // Redis
-    RedisStatus,
+use protocol::parse_command;
+
+let cmd = parse_command("PING").unwrap();
+assert!(matches!(cmd, Command::Ping));
+
+let cmd = parse_command("DB_CREATE myapp").unwrap();
+assert!(matches!(cmd, Command::DbCreate(n) if n == "myapp"));
+```
+
+### `encode(s: &str) → String`
+
+Percent-encodes a string for safe TCP transport (spaces, newlines, special chars).
+
+```rust
+use protocol::encode;
+let line = format!("COMPILE {}", encode("service users\nendpoint list GET /users\n"));
+```
+
+### `decode(s: &str) → String`
+
+Percent-decodes a received payload.
+
+```rust
+use protocol::decode;
+let source = decode("service%20users%0Aendpoint%20list%20GET%20%2Fusers");
+```
+
+## Key Types
+
+### `DaemonMode`
+
+```rust
+pub enum DaemonMode { Lite, Full, Ultra, Off }
+```
+
+Modes control which daemon subsystems are active:
+
+| Mode | Active features |
+|------|----------------|
+| `lite` | TCP + compiler only |
+| `full` | TCP + HTTP + compiler + Docker + Redis |
+| `ultra` | full + metrics + traces + rate-limiting |
+| `off` | Daemon is stopped |
+
+### `Trace` / `Span` / `LogEntry`
+
+Rich trace types for the observability subsystem:
+
+```rust
+pub struct Trace {
+    pub id:         String,
+    pub service:    String,
+    pub endpoint:   String,
+    pub spans:      Vec<Span>,
+    pub logs:       Vec<LogEntry>,
+    pub start_ms:   u64,
+    pub duration_ms: u64,
+    pub status:     u16,
+    pub sampled:    bool,
 }
 ```
 
-## Response Types
+### `Metric`
 
 ```rust
-pub enum Response {
-    Pong,
-    Mode(String),
-    Ok(String),
-    Data(String),
-    Error(String),
+pub struct Metric {
+    pub name:   String,
+    pub kind:   MetricKind,   // Counter | Gauge | Histogram
+    pub value:  f64,
+    pub labels: HashMap<String, String>,
+    pub ts_ms:  u64,
 }
 ```
 
-## Wire Format
-
-Commands are line-delimited text:
-
-```
-PING\n
-COMPILE <escaped-source>\n
-DB CREATE mydb\n
-MODE SET full\n
-```
-
-Responses:
-
-```
-PONG\n
-DATA <escaped-data>\n
-OK <message>\n
-ERR <error>\n
-MODE <mode>\n
-```
-
-## Encoding
-
-Special characters are URL-encoded:
-
-- Space → `%20`
-- Newline → `%0A`
-- Percent → `%25`
-
-Example:
-
-```
-"service hello\nendpoint ping GET /ping"
-→
-"service%20hello%0Aendpoint%20ping%20GET%20/ping"
-```
-
-Functions:
+### `AuthScheme`
 
 ```rust
-pub fn escape(value: &str) -> String
-pub fn unescape(value: &str) -> String
+pub enum AuthScheme { Bearer, ApiKey }
 ```
 
-## Parsing
+## Design Notes
 
-Convert wire format to structured type:
-
-```rust
-pub fn parse_command(line: &str) -> Result<Command, String>
-```
-
-Examples:
-
-```rust
-parse_command("PING")
-// → Ok(Command::Ping)
-
-parse_command("COMPILE service%20hello")
-// → Ok(Command::Compile { source: "service hello".to_string() })
-
-parse_command("DB CREATE mydb")
-// → Ok(Command::DbCreate { name: "mydb".to_string() })
-
-parse_command("INVALID")
-// → Err("unknown command".to_string())
-```
-
-## Rendering
-
-Convert structured type to wire format:
-
-```rust
-pub fn render_response(response: Response) -> String
-```
-
-Examples:
-
-```rust
-render_response(Response::Pong)
-// → "PONG\n"
-
-render_response(Response::Data("hello world".to_string()))
-// → "DATA hello%20world\n"
-
-render_response(Response::Error("not found".to_string()))
-// → "ERR not found\n"
-```
-
-## Adding New Commands
-
-1. **Add to enum:**
-
-```rust
-pub enum Command {
-    // ...
-    NewCommand { arg: String },
-}
-```
-
-2. **Add parsing logic:**
-
-```rust
-pub fn parse_command(line: &str) -> Result<Command, String> {
-    // ...
-    if let Some(arg) = trimmed.strip_prefix("NEW ") {
-        return Ok(Command::NewCommand {
-            arg: arg.to_string(),
-        });
-    }
-    // ...
-}
-```
-
-3. **Add tests:**
-
-```rust
-#[test]
-fn parse_new_command() {
-    let parsed = parse_command("NEW foo").unwrap();
-    assert_eq!(parsed, Command::NewCommand { arg: "foo".to_string() });
-}
-```
-
-4. **Update daemon handler** (in daemon crate)
-
-## Design Decisions
-
-### Why Text-Based?
-
-- **Simple** — Easy to debug with `nc` or `telnet`
-- **Human-readable** — No binary parsing
-- **Universal** — Works on any platform
-- **Debuggable** — Can inspect with Wireshark, tcpdump
-
-### Why URL Encoding?
-
-- **Familiar** — Well-understood format
-- **Simple** — Only 3 substitutions
-- **Sufficient** — Handles all common cases
-
-Alternatives considered:
-- JSON — Too verbose, requires parser
-- MessagePack — Binary, not human-readable
-- Protocol Buffers — Overkill for local dev
-
-### Why Line-Delimited?
-
-- **Simple** — Just `BufReader::read_line()`
-- **Stateless** — No connection tracking needed
-- **Lightweight** — No framing overhead
-
-## Testing
-
-```bash
-cargo test -p protocol
-```
-
-Tests cover:
-- Parsing all command types
-- Rendering all response types
-- Escape/unescape round trips
-- Error cases (invalid commands)
-
-## Usage Example
-
-### Client Side (CLI)
-
-```rust
-use protocol::{Command, parse_command, render_response, escape};
-
-let source = "service hello\nendpoint ping GET /ping";
-let cmd = format!("COMPILE {}", escape(source));
-
-// Send over TCP
-stream.write_all(format!("{cmd}\n").as_bytes())?;
-```
-
-### Server Side (Daemon)
-
-```rust
-use protocol::{Command, Response, parse_command, render_response};
-
-let line = read_line_from_socket()?;
-match parse_command(&line) {
-    Ok(Command::Compile { source }) => {
-        let result = compile_and_generate(&source)?;
-        let response = Response::Data(result);
-        write_response(render_response(response));
-    }
-    Err(e) => {
-        write_response(render_response(Response::Error(e)));
-    }
-}
-```
-
-## Future Enhancements
-
-- **Binary protocol option** — For high-performance use cases
-- **Streaming** — For large responses (e.g., logs)
-- **Compression** — For bandwidth-constrained environments
-- **Authentication** — API keys or tokens
-- **Versioning** — Protocol version negotiation
-
-## Dependencies
-
-- Only Rust `std` library
-- No external crates
-
-## Contributing
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md).
-
-Common improvements:
-- Additional command types
-- Better error messages
-- Protocol documentation generator
-- Wire format validator
-
-## License
-
-MIT — see [LICENSE](../LICENSE).
+- **Line-oriented** — each message is exactly one `\n`-terminated line, making it easy to implement with a simple `BufRead` reader in both CLI and daemon.
+- **Percent-encoding** — all freeform payloads (source code, SQL, tokens) are percent-encoded so they never contain `\n`, allowing the simple line framing to work with any content.
+- **Shared types** — both `cli` and `daemon` depend on this crate, ensuring the CLI can never send a command the daemon doesn't understand.
+- **Zero external dependencies** — pure `std`.
+- **VERSION constant** — single source of truth for the protocol version (`"0.2.0"`).

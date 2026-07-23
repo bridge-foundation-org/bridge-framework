@@ -86,7 +86,7 @@ Bridge is a lightweight Encore-inspired framework. This document tracks the impl
 - [x] **Tailwind v4** — Modern styling with Encore-inspired design system
 
 ### Testing
-- [x] **370 workspace tests** — All passing (0 failures)
+- [x] **380 workspace tests** — All passing (0 failures)
 - [x] **28 e2e unit tests** — Compiler→Codegen pipeline, protocol, db, miniredis RESP
 - [x] **36 daemon e2e tests** — Full TCP+HTTP+Redis integration (require running daemon)
 - [x] **210 daemon unit tests** — TCP, HTTP, auth, metrics, middleware, watcher, ratelimit, config
@@ -106,15 +106,15 @@ Bridge is a lightweight Encore-inspired framework. This document tracks the impl
 ## 🚧 In Progress
 
 ### Code Modularity
-- [ ] **Module README files** — Comprehensive documentation for each crate
-- [ ] **Docker Compose** — One-command infrastructure setup
-- [ ] **Enhanced error messages** — More context in compiler/runtime errors
+- [x] **Module README files** — Comprehensive documentation for each crate (db, compiler, codegen, miniredis, protocol, e2e-tests)
+- [x] **Docker Compose** — One-command infrastructure setup with env overrides, profiles, and health checks
+- [x] **Enhanced error messages** — Rich `ParseError` type with error codes (E0001–E0010), source context snippets, and fix hints
 
 ## 📋 Planned Features
 
 ### Developer Experience
-- [ ] **CLI autocomplete** — Shell completions (bash/zsh/fish) ← already in CLI, needs `bridge completions` docs
-- [ ] **Project templates** — Additional scaffold templates beyond default
+- [x] **CLI autocomplete** — Shell completions for bash, zsh, fish, and PowerShell (`bridge completions <shell>`)
+- [x] **Project templates** — `bridge init --template rest-api-auth` scaffolds REST API with bearer auth, DB migrations, and rate limiting
 
 ### Advanced Features
 - [ ] **WebSocket support** — Real-time communication via SSE streaming

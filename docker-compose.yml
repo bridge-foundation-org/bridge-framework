@@ -1,34 +1,50 @@
 version: '3.8'
 
+# Bridge Framework — Docker Compose
+#
+# Default:   docker-compose up -d
+# Full stack: docker-compose --profile full up -d
+# Reset:      docker-compose down -v && docker-compose up -d
+#
+# Override defaults via a .env file (copy .env.example → .env).
+
 services:
-  # PostgreSQL database for Bridge applications
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: bridge_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: bridge
-      POSTGRES_PASSWORD: bridge
-      POSTGRES_DB: bridge_dev
+      POSTGRES_USER:     ${POSTGRES_USER:-bridge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bridge}
+      POSTGRES_DB:       ${POSTGRES_DB:-bridge_dev}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bridge"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bridge} -d ${POSTGRES_DB:-bridge_dev}"]
       interval: 5s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    networks:
+      - bridge_network
 
-  # Redis (alternative to embedded miniredis for testing)
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  # Alternative to the embedded miniredis for production-like setups.
   redis:
     image: redis:7-alpine
     container_name: bridge_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
-    command: redis-server --appendonly yes
+      - "${REDIS_PORT:-6379}:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory ${REDIS_MAX_MEMORY:-64mb}
+      --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     healthcheck:
@@ -36,31 +52,67 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+      start_period: 5s
+    networks:
+      - bridge_network
 
-  # pgAdmin for database management (optional)
+  # ── pgAdmin (optional UI, profile: full) ─────────────────────────────────────
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: bridge_pgadmin
+    profiles: [full]
     restart: unless-stopped
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@bridge.local
-      PGADMIN_DEFAULT_PASSWORD: bridge
+      PGADMIN_DEFAULT_EMAIL:    ${PGADMIN_EMAIL:-admin@bridge.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-bridge}
       PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
     ports:
-      - "5050:80"
+      - "${PGADMIN_PORT:-5050}:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    networks:
+      - bridge_network
 
+  # ── Redis Commander (optional UI, profile: full) ──────────────────────────────
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: bridge_redis_commander
+    profiles: [full]
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: "local:redis:6379"
+    ports:
+      - "${REDIS_COMMANDER_PORT:-8081}:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - bridge_network
+
+# ── Named volumes ───────────────────────────────────────────────────────────────
 volumes:
   postgres_data:
     driver: local
+    labels:
+      com.bridge.managed: "true"
+      com.bridge.component: "postgres"
   redis_data:
     driver: local
+    labels:
+      com.bridge.managed: "true"
+      com.bridge.component: "redis"
   pgadmin_data:
     driver: local
+    labels:
+      com.bridge.managed: "true"
+      com.bridge.component: "pgadmin"
 
+# ── Network ─────────────────────────────────────────────────────────────────────
 networks:
-  default:
+  bridge_network:
     name: bridge_network
+    driver: bridge
