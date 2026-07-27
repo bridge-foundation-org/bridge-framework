@@ -8,6 +8,8 @@
 //! version = "0.1.0"
 //!
 //! [daemon]
+
+#![allow(dead_code)]
 //! http_addr  = "127.0.0.1:8787"
 //! tcp_addr   = "127.0.0.1:7878"
 //! redis_addr = "127.0.0.1:6399"
@@ -324,7 +326,7 @@ pub fn apply(cfg: &BridgeConfig, state: &crate::state::SharedState) {
 
     // Middleware rules
     for mw_rule in &cfg.middleware {
-        use crate::middleware::{MiddlewareBuilder, Scope};
+        use crate::middleware::MiddlewareBuilder;
 
         let scope = match crate::http::parse_scope(&mw_rule.scope) {
             Ok(s) => s,

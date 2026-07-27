@@ -27,7 +27,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 // ── Token Bucket ──────────────────────────────────────────────────────────────
 
@@ -70,6 +70,7 @@ impl TokenBucket {
     }
 
     /// Peek at remaining tokens without consuming.
+    #[allow(dead_code)]
     pub fn remaining(&mut self) -> u64 {
         self.refill();
         self.tokens as u64
@@ -114,6 +115,7 @@ impl BucketKey {
 
     /// Returns true if this key matches the given method + path.
     /// `"*"` in either field is a wildcard.
+    #[allow(dead_code)]
     pub fn matches(&self, method: &str, path: &str) -> bool {
         let m = self.method == "*" || self.method.eq_ignore_ascii_case(method);
         let p = self.path == "*"   || self.path == path;
@@ -202,6 +204,7 @@ impl RateLimiter {
     /// The entry is globally scoped; the bucket lookup narrows it to the
     /// specific endpoint.  Pass in `Arc<Mutex<RateLimiter>>` so the hook
     /// closure shares state with the registry.
+    #[allow(dead_code)]
     pub fn as_middleware(
         limiter: Arc<Mutex<RateLimiter>>,
         name: impl Into<String>,
@@ -265,6 +268,7 @@ impl RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     // ── TokenBucket ───────────────────────────────────────────────────────────
 

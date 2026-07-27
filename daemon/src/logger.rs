@@ -5,6 +5,8 @@
 //!
 //! Zero external dependencies — pure std.
 
+#![allow(dead_code)]
+
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};

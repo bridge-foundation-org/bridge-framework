@@ -6,6 +6,8 @@
 //!
 //! Zero external dependencies — pure std.
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -5,6 +5,8 @@
 //!
 //! Zero external dependencies — pure std.
 
+#![allow(dead_code)]
+
 use std::fmt;
 
 // ── Error codes ───────────────────────────────────────────────────────────────

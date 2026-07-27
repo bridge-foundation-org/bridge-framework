@@ -8,6 +8,8 @@
 //!
 //! ```text
 //! request → [before₁] → [before₂] → handler → [after₂] → [after₁] → response
+
+#![allow(dead_code)]
 //! ```
 //!
 //! ### Scoping

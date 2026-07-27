@@ -91,15 +91,18 @@ impl Metrics {
 // ── Structured log ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum LogLevel { Debug, Info, Warn, Error }
 
 impl LogLevel {
+    #[allow(dead_code)]
     pub fn as_str(self) -> &'static str {
         match self { Self::Debug => "DEBUG", Self::Info => "INFO",
                      Self::Warn  => "WARN",  Self::Error => "ERROR" }
     }
 }
 
+#[allow(dead_code)]
 pub struct LogEntry {
     pub level:     LogLevel,
     pub message:   String,
@@ -108,6 +111,7 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
+    #[allow(dead_code)]
     pub fn to_json(&self) -> String {
         let fields: Vec<String> = self.fields.iter()
             .map(|(k, v)| format!(r#""{k}":"{v}""#)).collect();
@@ -124,6 +128,7 @@ impl LogEntry {
 }
 
 /// Write a structured log line to stderr.
+#[allow(dead_code)]
 pub fn log(level: LogLevel, msg: &str, fields: &[(&str, &str)]) {
     let ts = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -150,6 +155,7 @@ pub struct State {
     /// In-memory metrics (legacy simple counters).
     pub metrics:           Metrics,
     /// Full metrics registry with Prometheus support.
+    #[allow(dead_code)]
     pub metric_registry:   MetricsRegistry,
     /// Recent log entries (capped at MAX_LOGS).
     pub logs:              Vec<LogEntry>,

@@ -17,13 +17,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use crate::auth;
-use crate::config;
 use crate::middleware::{MiddlewareBuilder, MiddlewareContext, Scope};
 use crate::ratelimit::BucketKey;
 use crate::sqldb;
 use crate::state::{LogLevel, SharedState};
-use crate::watcher;
+use crate::streaming;
 
 // ── Request ID counter ────────────────────────────────────────────────────────
 
@@ -59,7 +57,7 @@ fn cors_origin() -> String {
 
 // ── Request parsing ───────────────────────────────────────────────────────────
 
-struct Request {
+pub(crate) struct Request {
     method:  String,
     path:    String,
     headers: Vec<(String, String)>,
@@ -192,6 +190,7 @@ fn not_found()     -> String { json_response(404, r#"{"error":"not found"}"#) }
 fn bad_request(msg: &str) -> String {
     json_response(400, &format!(r#"{{"error":"{msg}"}}"#))
 }
+#[allow(dead_code)]
 fn unauthorized(msg: &str) -> String {
     json_response(401, &format!(r#"{{"error":"unauthenticated","message":"{}"}}"#, msg))
 }
@@ -448,6 +447,11 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("GET",  "/api/v1/openapi")            => openapi(state),
         ("POST", "/api/v1/sampling")           => set_sampling(req, state),
 
+        // ── Streaming endpoints ───────────────────────────────────────────
+        ("GET",  "/api/v1/stream/traces")      => stream_traces(state, &req),
+        ("GET",  "/api/v1/stream/metrics")     => stream_metrics(state, &req),
+        ("GET",  "/api/v1/stream/services")    => stream_services(state, &req),
+
         // ── Middleware ────────────────────────────────────────────────────
         ("GET",    "/api/v1/middleware")        => middleware_list(state),
         ("POST",   "/api/v1/middleware")        => middleware_register(req, state),
@@ -485,7 +489,7 @@ pub fn should_enforce_auth(path: &str) -> bool {
 
 /// Validate the request's auth headers against the configured token.
 /// Accepts: `Authorization: Bearer <token>`, `X-Api-Key: <key>`, `X-Bridge-Token: <tok>`.
-pub fn check_auth(req: &Request, expected: &str) -> Result<(), String> {
+pub(crate) fn check_auth(req: &Request, expected: &str) -> Result<(), String> {
     if let Some(hdr) = req.header("authorization") {
         let tok = hdr.strip_prefix("Bearer ").unwrap_or(hdr).trim();
         return if tok == expected { Ok(()) } else { Err("invalid bearer token".into()) };
@@ -1572,4 +1576,29 @@ mod tests {
         assert!(resp.contains("429"),         "expected 429, got: {resp}");
         assert!(resp.contains("Retry-After"), "missing Retry-After header, got: {resp}");
     }
+}
+
+
+
+// ── Streaming Endpoints ────────────────────────────────────────────────────
+
+fn stream_traces(_state: &SharedState, _req: &Request) -> String {
+    // Returns Server-Sent Events stream of recent traces
+    // TODO: Implement real trace streaming
+    let frame = streaming::SseFrame::new("traces", r#"{"status":"stream-active"}"#);
+    frame.encode()
+}
+
+fn stream_metrics(_state: &SharedState, _req: &Request) -> String {
+    // Returns Server-Sent Events stream of metrics updates
+    // TODO: Implement real metrics streaming
+    let frame = streaming::SseFrame::new("metrics", r#"{"status":"stream-active"}"#);
+    frame.encode()
+}
+
+fn stream_services(_state: &SharedState, _req: &Request) -> String {
+    // Returns Server-Sent Events stream of service catalog updates
+    // TODO: Implement real service streaming
+    let frame = streaming::SseFrame::new("services", r#"{"status":"stream-active"}"#);
+    frame.encode()
 }
