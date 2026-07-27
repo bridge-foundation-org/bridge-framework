@@ -9,6 +9,7 @@
 
 mod auth;
 mod config;
+mod config_schema;
 mod context;
 mod errors;
 mod http;
