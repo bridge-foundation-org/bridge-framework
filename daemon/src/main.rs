@@ -33,6 +33,7 @@ mod sqldb;
 mod state;
 mod streaming;
 mod tcp;
+mod transactions;
 mod transport;
 mod tracing;
 mod watcher;
