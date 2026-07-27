@@ -18,6 +18,7 @@ mod go_codegen;
 mod http;
 mod logger;
 mod metrics;
+mod metrics_exporters;
 mod middleware;
 mod pubsub;
 mod pubsub_provider;
