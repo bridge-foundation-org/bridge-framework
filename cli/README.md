@@ -9,6 +9,7 @@ The CLI is a simple, single-binary tool that sends commands to the daemon over T
 - Compilation and codegen
 - Database management
 - Daemon control
+- Shell completions
 
 ## Architecture
 
@@ -34,13 +35,21 @@ The CLI:
 ### Project Management
 
 ```bash
-bridge init <project-dir>   # Create new Bridge project
+bridge init <project-dir>                         # Create new Bridge project (default template)
+bridge init <project-dir> --template rest-api-auth  # REST API with bearer auth, DB, rate limiting
 ```
 
 Creates:
-- `bridge.app` — Service definition
-- `frontend/` — Vite + Tailwind frontend
+- `bridge.toml` — Project configuration (see [bridge.toml section](#bridgetoml))
+- `app.bridge` — Service definition
 - `README.md` — Quick start guide
+
+**Templates:**
+
+| Template | Description | Extra files |
+|----------|-------------|-------------|
+| `default` | Minimal hello-world service | — |
+| `rest-api-auth` | REST API with bearer auth + PostgreSQL | `migrations/001_init.sql`, `.env.example` |
 
 ### Compilation
 
@@ -75,6 +84,17 @@ bridge mode-set <mode>          # Set mode (lite|full|ultra|off)
 bridge redis-status             # Check miniredis
 ```
 
+### Shell Completions
+
+```bash
+bridge completions bash          # Print bash completion script
+bridge completions zsh           # Print zsh completion script
+bridge completions fish          # Print fish completion script
+bridge completions powershell    # Print PowerShell completion script
+```
+
+See the [Shell Completions section](#shell-completions) for sourcing instructions.
+
 ### Low-Level
 
 ```bash
@@ -82,6 +102,112 @@ bridge raw <command>            # Send raw protocol command
 ```
 
 For debugging and testing.
+
+## bridge.toml
+
+`bridge init` now creates a `bridge.toml` alongside `app.bridge`. This file configures the daemon's behaviour for the project and is read by the daemon on startup.
+
+**Generated `bridge.toml`:**
+
+```toml
+# Bridge project configuration
+# Full reference: https://github.com/yourusername/bridge-framework/docs/config.md
+
+tcp_addr   = "127.0.0.1:7878"
+http_addr  = "127.0.0.1:8787"
+redis_addr = "127.0.0.1:6399"
+log_level  = "info"
+
+[watch]
+# Enable hot-reload: recompile .bridge files on change and push SSE events
+enabled       = true
+poll_interval = 500     # milliseconds between file-system polls
+dirs          = ["src"] # directories to watch recursively
+
+[ratelimit]
+# Token-bucket rate limiter applied to all HTTP routes
+enabled  = true
+capacity = 100.0        # maximum burst tokens
+refill   = 10.0         # tokens refilled per second
+
+[auth]
+# Set enabled = true and export BRIDGE_API_KEY=<key> to protect all endpoints
+enabled      = false
+api_key_env  = "BRIDGE_API_KEY"
+```
+
+All values are optional — the daemon uses sensible defaults if `bridge.toml` is missing or a key is omitted. Environment variables (e.g. `BRIDGE_HTTP_ADDR`) override file values.
+
+**Project directory after `bridge init myapp`:**
+
+```
+myapp/
+├── bridge.toml                 # Daemon configuration  ← new
+├── app.bridge                  # Service definition
+├── README.md                   # Getting started guide
+└── frontend/
+    ├── package.json
+    ├── tsconfig.json
+    ├── vite.config.ts
+    ├── index.html
+    ├── src/
+    │   ├── main.ts
+    │   └── style.css
+    └── bridge.gen/
+        └── client.ts           # Placeholder client
+```
+
+## Shell Completions
+
+The `bridge completions` command prints a completion script for your shell. Source it once (or add to your shell profile) to get tab-completion for all Bridge commands and flags.
+
+### Bash
+
+```bash
+# Source in the current session
+source <(bridge completions bash)
+
+# Install permanently (add to ~/.bashrc)
+bridge completions bash >> ~/.bashrc
+source ~/.bashrc
+```
+
+Or for a system-wide install:
+
+```bash
+bridge completions bash | sudo tee /etc/bash_completion.d/bridge
+```
+
+### Zsh
+
+```bash
+# Source in the current session
+source <(bridge completions zsh)
+
+# Install permanently (add to ~/.zshrc)
+bridge completions zsh >> ~/.zshrc
+source ~/.zshrc
+```
+
+If you use `oh-my-zsh`, drop the script into the completions directory:
+
+```bash
+bridge completions zsh > "${fpath[1]}/_bridge"
+```
+
+Ensure `compinit` runs after this (it typically does via `oh-my-zsh`).
+
+### Fish
+
+```bash
+# Source in the current session
+bridge completions fish | source
+
+# Install permanently
+bridge completions fish > ~/.config/fish/completions/bridge.fish
+```
+
+Fish picks up files in `~/.config/fish/completions/` automatically; no extra step needed.
 
 ## Protocol
 
@@ -111,6 +237,8 @@ The CLI reads environment variables:
 
 - `BRIDGE_TCP_ADDR` — Daemon TCP address (default: `127.0.0.1:7878`)
 
+Project-level daemon settings live in `bridge.toml` (read by the daemon, not the CLI directly).
+
 Example:
 ```bash
 export BRIDGE_TCP_ADDR=127.0.0.1:9999
@@ -132,31 +260,23 @@ cannot connect to daemon at 127.0.0.1:7878: Connection refused.
 Start it with `cargo run -p daemon`.
 ```
 
-## Project Init Templates
+## Full Command Reference
 
-When you run `bridge init myapp`, it creates:
-
-```
-myapp/
-├── bridge.app                  # Service definition
-├── README.md                   # Getting started guide
-└── frontend/
-    ├── package.json
-    ├── tsconfig.json
-    ├── vite.config.ts
-    ├── index.html
-    ├── src/
-    │   ├── main.ts
-    │   └── style.css
-    └── bridge.gen/
-        └── client.ts           # Placeholder client
-```
-
-The frontend is pre-configured with:
-- Vite for dev server and building
-- Tailwind CSS v4
-- TypeScript with strict mode
-- Alias `~bridge` pointing to `bridge.gen/`
+| Command | Arguments | Description |
+|---------|-----------|-------------|
+| `init` | `<project-dir>` | Scaffold a new Bridge project (creates `bridge.toml` + `app.bridge`) |
+| `ping` | — | Health-check the daemon |
+| `compile` | `<source>` | Compile inline DSL source |
+| `compile-file` | `<path>` | Compile a `.bridge` file |
+| `db-create` | `<name>` | Create a Postgres Docker container |
+| `db-status` | — | Show container status |
+| `db-migrate` | `<sql-file>` | Run a SQL migration file |
+| `db-destroy` | `<name>` | Stop and remove a container |
+| `mode-get` | — | Get current daemon mode |
+| `mode-set` | `<mode>` | Set daemon mode (`lite`/`full`/`ultra`/`off`) |
+| `redis-status` | — | Show miniredis connection info |
+| `completions` | `bash\|zsh\|fish` | Print shell completion script |
+| `raw` | `<command>` | Send a raw protocol command (debug) |
 
 ## Code Structure
 
@@ -168,14 +288,16 @@ Simple structure:
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     
-    // Special case: init (doesn't need daemon)
-    if args[0] == "init" {
-        return init_project(&args[1]);
+    // Special cases that don't need the daemon
+    match args[0].as_str() {
+        "init"        => return init_project(&args[1]),
+        "completions" => return print_completions(args.get(1)),
+        _ => {}
     }
     
     // Parse args into protocol command
     let command = match args[0].as_str() {
-        "ping" => "PING".to_string(),
+        "ping"         => "PING".to_string(),
         "compile-file" => format!("COMPILE {}", escape(file_contents)),
         // ...
     };
@@ -195,7 +317,8 @@ fn main() {
 
 - `send_command(addr, cmd)` — TCP socket, send command, read response
 - `format_cli_output(raw)` — Parse `DATA`/`OK`/`ERR` prefixes, pretty-print
-- `init_project(dir)` — Create directory structure and template files
+- `init_project(dir)` — Create directory structure, write `bridge.toml`, and template files
+- `print_completions(shell)` — Emit a completion script for the requested shell
 - `escape(s)` / `unescape(s)` — URL encoding (protocol crate)
 
 ## Adding New Commands
@@ -203,7 +326,8 @@ fn main() {
 1. Add to usage message in `print_usage_and_exit()`
 2. Add match arm in `main()`
 3. Construct protocol command string
-4. (Optional) Update protocol crate if adding new command type
+4. Add the command to each completion script in `print_completions()`
+5. (Optional) Update protocol crate if adding a new command type
 
 Example: Adding `bridge test <file>`
 
@@ -230,6 +354,11 @@ cargo test -p cli
 cargo run -p daemon &
 cargo run -p cli -- ping
 cargo run -p cli -- compile "service hello\nendpoint ping GET /ping"
+
+# Test completions output
+cargo run -p cli -- completions bash
+cargo run -p cli -- completions zsh
+cargo run -p cli -- completions fish
 ```
 
 ## Dependencies
@@ -243,11 +372,10 @@ cargo run -p cli -- compile "service hello\nendpoint ping GET /ping"
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for guidelines.
 
 Common improvements:
-- Better error messages
-- Shell completion scripts (bash, zsh, fish)
 - Progress indicators for long operations
 - Colored output
 - Interactive mode
+- Watch mode (`bridge watch <file>`) that streams SSE events from the daemon
 
 ## License
 
