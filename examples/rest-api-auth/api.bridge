@@ -1,0 +1,32 @@
+service users
+auth bearer
+
+# List all users - requires auth
+endpoint list GET /users
+
+# Get a specific user - requires auth
+endpoint get GET /users/:id
+
+# Create a new user - requires auth
+endpoint create POST /users
+
+# Update a user - requires auth
+endpoint update PUT /users/:id
+
+# Delete a user - requires auth
+endpoint delete DELETE /users/:id
+
+service posts
+auth api_key
+
+# List all posts
+endpoint list GET /posts
+
+# Get a specific post
+endpoint get GET /posts/:id
+
+# Create a new post
+endpoint create POST /posts
+
+# Publish a post (custom endpoint)
+endpoint publish POST /posts/:id/publish

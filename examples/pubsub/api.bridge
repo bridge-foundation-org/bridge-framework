@@ -1,0 +1,21 @@
+service events
+
+# Publish an event to a topic
+endpoint publish POST /events/publish
+
+# Subscribe to a topic (long-polling or SSE)
+endpoint subscribe GET /events/subscribe/:topic
+
+# Get event history for a topic
+endpoint history GET /events/history/:topic
+
+# Acknowledge/mark message as processed
+endpoint ack POST /events/acknowledge/:message_id
+
+service notifications
+
+# Subscribe to user notifications
+endpoint subscribe GET /notifications/subscribe/:user_id
+
+# Publish a notification
+endpoint send POST /notifications/send/:user_id

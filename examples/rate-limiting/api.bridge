@@ -1,0 +1,10 @@
+service api
+
+# Fast endpoint - can be called many times
+endpoint fast GET /fast
+
+# Slow endpoint - limited to 10 calls per second
+endpoint slow GET /slow
+
+# Premium endpoint - limited to 5 calls per second
+endpoint premium GET /premium

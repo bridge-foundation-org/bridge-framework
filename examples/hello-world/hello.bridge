@@ -1,0 +1,10 @@
+service hello
+
+# Basic ping endpoint - no auth required
+endpoint ping GET /ping
+
+# Echo endpoint - returns the input
+endpoint echo POST /echo
+
+# Greet endpoint with path parameter
+endpoint greet GET /greet/:name
