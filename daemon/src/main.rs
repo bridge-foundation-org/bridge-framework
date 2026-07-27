@@ -15,6 +15,7 @@ mod context;
 mod cron;
 mod errors;
 mod go_codegen;
+mod tracing;
 mod http;
 mod logger;
 mod metrics;
