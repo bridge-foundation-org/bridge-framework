@@ -26,6 +26,7 @@ mod ratelimit;
 mod redis_cluster;
 mod registry;
 mod scaffold;
+mod schema_introspect;
 mod secrets;
 mod services;
 mod shutdown;
