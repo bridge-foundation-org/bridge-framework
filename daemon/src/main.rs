@@ -19,6 +19,7 @@ mod pubsub;
 mod ratelimit;
 mod registry;
 mod secrets;
+mod services;
 mod sqldb;
 mod state;
 mod streaming;
