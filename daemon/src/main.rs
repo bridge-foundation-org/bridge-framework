@@ -23,6 +23,7 @@ mod middleware;
 mod pubsub;
 mod pubsub_provider;
 mod ratelimit;
+mod redis_cluster;
 mod registry;
 mod scaffold;
 mod secrets;
