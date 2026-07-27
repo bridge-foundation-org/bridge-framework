@@ -12,6 +12,7 @@ mod autocomplete;
 mod config;
 mod config_schema;
 mod context;
+mod cron;
 mod errors;
 mod http;
 mod logger;
