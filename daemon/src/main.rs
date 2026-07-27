@@ -22,6 +22,7 @@ mod sqldb;
 mod state;
 mod streaming;
 mod tcp;
+mod transport;
 mod watcher;
 
 use std::sync::{Arc, Mutex};
