@@ -26,6 +26,7 @@ mod registry;
 mod scaffold;
 mod secrets;
 mod services;
+mod shutdown;
 mod sqldb;
 mod state;
 mod streaming;
