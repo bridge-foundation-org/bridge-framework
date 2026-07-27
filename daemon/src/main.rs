@@ -8,6 +8,7 @@
 //! All three share the same `Arc<Mutex<State>>`.
 
 mod auth;
+mod autocomplete;
 mod config;
 mod config_schema;
 mod context;
