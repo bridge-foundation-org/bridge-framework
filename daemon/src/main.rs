@@ -19,6 +19,7 @@ mod middleware;
 mod pubsub;
 mod ratelimit;
 mod registry;
+mod scaffold;
 mod secrets;
 mod services;
 mod sqldb;
