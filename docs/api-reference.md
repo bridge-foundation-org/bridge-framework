@@ -2,45 +2,286 @@
 
 ## Base URL
 
-`http://127.0.0.1:8787` (configurable via `BRIDGE_HTTP_ADDR`)
+`http://127.0.0.1:8787` (override with `BRIDGE_HTTP_ADDR` env var)
 
-## Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | /health | Health check → `{"status":"ok"}` |
-| GET | /mode | Current mode → `{"mode":"full"}` |
-| POST | /mode | Set mode (body: lite/full/ultra/off) |
-| POST | /compile | Compile Bridge source → TypeScript |
-| GET | /db/latest | Latest codegen output |
-| POST | /db/create | Create Docker Postgres container |
-| GET | /db/status | Check container status |
-| POST | /db/migrate | Execute SQL migration |
-| DELETE | /db/destroy | Remove Postgres container |
-| GET | /redis/status | Miniredis status → `{"addr":"...","connections":0}` |
+All endpoints are also available at legacy paths without the `/api/v1` prefix for backwards compatibility.
 
 ## CORS
 
-All endpoints return:
-- `Access-Control-Allow-Origin: *`
-- `Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS`
-- `Access-Control-Allow-Headers: content-type`
+Every response includes:
+```
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization, X-Bridge-Token, X-Api-Key
+```
+
+`OPTIONS` requests always return `204 No Content`.
+
+## Request ID
+
+Every response includes `X-Bridge-Request-Id: req-xxxxxxxx` for tracing.
+
+## Auth
+
+When an auth token is configured (`POST /api/v1/auth/set`), all endpoints except health and auth management require one of:
+
+- `Authorization: Bearer <token>`
+- `X-Api-Key: <token>`
+- `X-Bridge-Token: <token>`
+
+Unauthorized requests get `401` with body `{"error":"unauthenticated","message":"..."}`.
+
+---
+
+## Endpoint Index
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/health` | Daemon health + metadata |
+| GET | `/api/v1/version` | Version string |
+| GET | `/api/v1/mode` | Current daemon mode |
+| POST | `/api/v1/mode` | Set mode (`lite\|full\|ultra\|off`) |
+| POST | `/api/v1/compile` | Compile Bridge DSL → TypeScript |
+| GET | `/api/v1/services` | List registered services |
+| GET | `/api/v1/routes` | List all routes |
+| GET | `/api/v1/codegen/latest` | Latest codegen output |
+| GET | `/api/v1/auth/status` | Auth token status |
+| POST | `/api/v1/auth/set` | Set auth token |
+| DELETE | `/api/v1/auth/clear` | Clear auth token |
+| GET | `/api/v1/traces` | List recent traces |
+| GET | `/api/v1/traces/:id` | Get trace by ID |
+| DELETE | `/api/v1/traces` | Clear all traces |
+| GET | `/api/v1/metrics` | Request metrics summary |
+| GET | `/api/v1/metrics/prometheus` | Prometheus text format |
+| DELETE | `/api/v1/metrics` | Reset metrics |
+| POST | `/api/v1/sampling` | Set trace sampling rate (0.0–1.0) |
+| GET | `/api/v1/openapi` | OpenAPI 3.0 spec (requires prior compile) |
+| GET | `/api/v1/middleware` | List middleware rules |
+| POST | `/api/v1/middleware` | Register middleware |
+| DELETE | `/api/v1/middleware` | Remove middleware |
+| GET | `/api/v1/ratelimit` | List rate-limit rules |
+| POST | `/api/v1/ratelimit` | Add rate-limit rule |
+| DELETE | `/api/v1/ratelimit` | Remove rate-limit rule |
+| GET | `/api/v1/watch` | Watcher status |
+| POST | `/api/v1/watch/files` | Add file to watch |
+| DELETE | `/api/v1/watch/files` | Remove file from watch |
+| POST | `/api/v1/watch/dirs` | Add directory to watch |
+| GET | `/api/v1/watch/events` | SSE hot-reload event stream |
+| GET | `/api/v1/config` | Runtime config summary |
+| GET | `/api/v1/pg/status` | Docker Postgres status |
+| POST | `/api/v1/pg/create` | Create Postgres container |
+| POST | `/api/v1/pg/migrate` | Run SQL migration |
+| DELETE | `/api/v1/pg/destroy` | Destroy Postgres container |
+| GET | `/api/v1/redis/status` | Miniredis status |
+
+---
+
+## Core
+
+### GET /api/v1/health
+
+```json
+{
+  "status": "ok",
+  "version": "0.2.0",
+  "app": "bridge",
+  "mode": "full",
+  "redis": "127.0.0.1:6399",
+  "redis_connections": 0,
+  "services": 1,
+  "traces": 42,
+  "sample_rate": 1.0
+}
+```
+
+### POST /api/v1/compile
+
+Body: raw Bridge DSL source. Returns TypeScript client source (plain text).
+
+```bash
+curl -X POST http://localhost:8787/api/v1/compile \
+  --data 'service hello\nendpoint ping GET /ping'
+```
+
+---
+
+## Auth
+
+### POST /api/v1/auth/set
+
+Accepts plain token or JSON body:
+
+```json
+{"scheme": "bearer", "token": "my-secret-token"}
+```
+
+### GET /api/v1/auth/status
+
+```json
+{"configured": true, "scheme": "bearer"}
+```
+
+---
+
+## Traces
+
+### GET /api/v1/traces?limit=N
+
+```json
+[
+  {"id":"t00000001","method":"GET","path":"/api/v1/health","status":200,"duration_ms":1,"timestamp":1720000000}
+]
+```
+
+---
+
+## Metrics
+
+### GET /api/v1/metrics
+
+```json
+{
+  "total_requests": 42,
+  "total_errors": 0,
+  "endpoints": [
+    {"endpoint":"GET /api/v1/health","requests":10,"errors":0,"avg_ms":1}
+  ]
+}
+```
+
+### GET /api/v1/metrics/prometheus
+
+Returns Prometheus text format (`Content-Type: text/plain; version=0.0.4`).
+
+---
+
+## Middleware
+
+See [middleware.md](middleware.md) for full documentation.
+
+### POST /api/v1/middleware
+
+```json
+{
+  "name":   "logger",
+  "scope":  "global",
+  "before": "log",
+  "after":  "header:X-Powered-By:bridge"
+}
+```
+
+Supported `scope` values: `"global"`, `"service:NAME"`, `"METHOD:/path"`.
+
+Supported `before` specs: `"log"`, `"reject:STATUS:msg"`.
+
+Supported `after` specs: `"log"`, `"header:KEY:VALUE"`.
+
+---
+
+## Rate Limiting
+
+See [ratelimit.md](ratelimit.md) for full documentation.
+
+### POST /api/v1/ratelimit
+
+```json
+{
+  "method":      "POST",
+  "path":        "/api/v1/compile",
+  "capacity":    60,
+  "refill_rate": 1.0
+}
+```
+
+On rate-limited requests (`429`):
+```
+Retry-After: 5
+X-RateLimit-Remaining: 0
+```
+
+On allowed requests:
+```
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 59
+X-RateLimit-Reset: 1720001000
+```
+
+---
+
+## Hot Reload
+
+See [watcher.md](watcher.md) for full documentation.
+
+### GET /api/v1/watch/events
+
+SSE stream. Events:
+
+```
+event: reload
+data: {"file":"app.bridge","status":"ok","ts":1720000000}
+
+event: error
+data: {"file":"app.bridge","status":"error","message":"parse error at line 3","ts":1720000000}
+
+: keepalive
+```
+
+---
+
+## Config
+
+See [config.md](config.md) for full documentation.
+
+### GET /api/v1/config
+
+```json
+{
+  "app": "my-app",
+  "version": "0.1.0",
+  "mode": "full",
+  "middleware": ["logger", "powered-by"],
+  "ratelimit": [
+    {"method":"POST","path":"/api/v1/compile","capacity":60,"refill_rate":1.0,"remaining":60}
+  ],
+  "watch": {"enabled": true, "poll_ms": 500, "files": ["app.bridge"]}
+}
+```
+
+---
 
 ## TCP Protocol
 
-Connect to `127.0.0.1:7878` and send text commands:
+Connect to `127.0.0.1:7878`. Send one newline-terminated command, receive one newline-terminated response, connection closes.
 
 ```
-PING → PONG
-HELP → DATA <help text>
-MODE GET → MODE <mode>
-MODE SET <mode> → OK MODE <mode>
-COMPILE <escaped-source> → DATA <escaped-typescript>
-DB PUT <ns> <key> <value> → OK stored
-DB GET <ns> <key> → DATA <value>
-DB CREATE <name> → OK <message>
-DB STATUS → DATA <status>
-DB MIGRATE <sql> → DATA <result>
-DB DESTROY <name> → OK <message>
-REDIS STATUS → DATA addr=<addr> connections=<n>
+PING                          → PONG
+VERSION                       → DATA <encoded-version>
+HEALTH                        → DATA <encoded-json>
+HELP                          → DATA <encoded-help>
+MODE GET                      → MODE <mode>
+MODE SET <mode>               → OK MODE=<mode>
+COMPILE <encoded-source>      → DATA <encoded-typescript>
+SERVICES LIST                 → DATA <encoded-json>
+ROUTES LIST                   → DATA <encoded-json>
+AUTH STATUS                   → DATA <encoded-json>
+AUTH SET <scheme> <token>     → OK token set
+AUTH CLEAR                    → OK cleared
+DB PUT <ns> <key> <value>     → OK stored
+DB GET <ns> <key>             → DATA <value> | ERR not found
+DB DEL <ns> <key>             → OK deleted
+DB KEYS <ns>                  → DATA <encoded-json>
+DB FLUSH <ns>                 → OK flushed
+TRACE LIST [limit]            → DATA <encoded-json>
+TRACE CLEAR                   → OK cleared
+METRICS LIST                  → DATA <encoded-json>
+METRICS CLEAR                 → OK cleared
+PG CREATE <name>              → OK <message>
+PG STATUS                     → DATA <status>
+PG MIGRATE <encoded-sql>      → DATA <result>
+PG DESTROY <name>             → OK <message>
+REDIS STATUS                  → DATA <encoded-json>
+REDIS PING                    → DATA PONG
+REDIS FLUSH                   → OK flushed
 ```
+
+Values containing spaces or special characters are percent-encoded. Use `protocol::encode()` / `protocol::decode()` from the `protocol` crate.
