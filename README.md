@@ -64,8 +64,8 @@ cargo install --path cli
 # 3. Start daemon (Terminal 1)
 cargo run -p daemon
 
-# 4. Start frontend (Terminal 2)
-cd frontend && npm install && npm run dev
+# 4. Start dev-dash (Terminal 2)
+cd dev-dash && npm install && npm run dev
 
 # 5. Use CLI (Terminal 3)
 bridge ping
@@ -120,7 +120,7 @@ bridge-framework/
 ├── db/               # In-memory key-value store
 ├── miniredis/        # Embedded Redis-compatible server
 ├── e2e-tests/        # Integration test suite
-├── frontend/         # Dev dashboard (Vite + Tailwind)
+├── dev-dash/         # Dev dashboard (Vite + Tailwind)
 └── docs/             # Comprehensive documentation
 ```
 
@@ -174,7 +174,7 @@ endpoint create POST /users
 ### 2. Generate Client
 
 ```bash
-bridge compile-file myapp.bridge > frontend/bridge.gen/client.ts
+bridge compile-file myapp.bridge > dev-dash/bridge.gen/client.ts
 ```
 
 ### 3. Use in Frontend
@@ -204,8 +204,8 @@ cargo test --workspace
 cargo build --release
 cargo test -p e2e-tests
 
-# Run frontend dev server
-cd frontend && npm run dev
+# Run dev-dash dev server
+cd dev-dash && npm run dev
 ```
 
 ## Documentation
@@ -244,7 +244,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 - **codegen** — Transforms AST into TypeScript client code
 - **db** — Thread-safe in-memory store with namespaces
 - **miniredis** — Redis protocol implementation (RESP parser + command handlers)
-- **frontend** — Vite + TypeScript + Tailwind dashboard
+- **dev-dash** — Vite + TypeScript + Tailwind dashboard
 
 See individual README files in each module for detailed architecture and contribution guidelines.
 
@@ -284,20 +284,27 @@ See [implementation_plan.md](implementation_plan.md) for detailed status.
 **Completed:**
 - ✅ Core protocol and daemon
 - ✅ Docker PostgreSQL management
-- ✅ Embedded miniredis
-- ✅ TypeScript codegen
+- ✅ Embedded miniredis with full Redis command support
+- ✅ TypeScript codegen with OpenAPI 3.0 spec generation
 - ✅ Dev dashboard with Encore-inspired UI
+- ✅ Authentication and middleware system
+- ✅ Rate limiting with token bucket algorithm
+- ✅ Hot reload with file watcher
+- ✅ Project configuration (bridge.toml)
+- ✅ Structured logging and observability
+- ✅ Pub/Sub messaging broker
+- ✅ Secrets management
+- ✅ Streaming endpoints (SSE)
 
 **In Progress:**
-- 🚧 Enhanced modularity and contributor guides
-- 🚧 Docker Compose infrastructure setup
+- 🚧 Metrics API implementation (Encore commits 1996-1997)
+- 🚧 Enhanced documentation
 
 **Planned:**
-- 📋 Authentication and middleware system
-- 📋 WebSocket support
-- 📋 Pub/Sub messaging
-- 📋 Hot reload for daemon
-- 📋 CLI autocomplete
+- 📋 WebSocket support (full implementation)
+- 📋 Multi-service routing
+- 📋 External vault integration for secrets
+- 📋 Advanced tracing features
 
 ## License
 
