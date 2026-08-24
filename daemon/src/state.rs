@@ -16,7 +16,9 @@ use crate::middleware::MiddlewareRegistry;
 use crate::pubsub::Broker;
 use crate::ratelimit::RateLimiter;
 use crate::secrets::SecretsRegistry;
+use crate::staticfiles::StaticRegistry;
 use crate::streaming::StreamRegistry;
+use crate::validation::ValidationRegistry;
 use crate::watcher::WatchRegistry;
 
 // ── Trace entry ───────────────────────────────────────────────────────────────
@@ -212,6 +214,10 @@ pub struct State {
     pub watcher: WatchRegistry,
     /// Per-endpoint rate limiter.
     pub rate_limiter: RateLimiter,
+    /// Request-body validation schemas (per `METHOD:/path`).
+    pub validation: ValidationRegistry,
+    /// Static file mounts.
+    pub static_files: StaticRegistry,
     /// Monotonically increasing trace ID counter.
     trace_counter: u64,
     /// RNG state for sampling (simple LCG).
@@ -245,6 +251,8 @@ impl State {
             middleware: MiddlewareRegistry::new(),
             watcher: WatchRegistry::new(),
             rate_limiter: RateLimiter::new(),
+            validation: ValidationRegistry::new(),
+            static_files: StaticRegistry::new(),
             trace_counter: 0,
             rng_state: 12345678901234567,
         }

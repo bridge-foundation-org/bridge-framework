@@ -32,11 +32,13 @@ mod services;
 mod shutdown;
 mod sqldb;
 mod state;
+mod staticfiles;
 mod streaming;
 mod tcp;
 mod tracing;
 mod transactions;
 mod transport;
+mod validation;
 mod watcher;
 
 use std::sync::{Arc, Mutex};

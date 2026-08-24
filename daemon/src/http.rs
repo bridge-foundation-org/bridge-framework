@@ -21,7 +21,9 @@ use crate::middleware::{MiddlewareBuilder, MiddlewareContext, Scope};
 use crate::ratelimit::BucketKey;
 use crate::sqldb;
 use crate::state::{LogLevel, SharedState};
+use crate::staticfiles::{StaticMount, StaticResult};
 use crate::streaming;
+use crate::validation::{self, violations_json, Rule};
 
 // ── Request ID counter ────────────────────────────────────────────────────────
 
@@ -260,8 +262,47 @@ fn handle(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> {
         return handle_state_stream(stream, state, clean_path);
     }
 
+    // Static file mounts — byte-accurate responses, only for non-API paths.
+    // Registered API routes always win; a "/" mount serves everything else
+    // (SPA-style) and falls through to normal 404 when nothing matches.
+    let is_api_route = clean_path == "/"
+        || clean_path.starts_with("/api/")
+        || matches!(
+            clean_path,
+            "/health" | "/mode" | "/compile" | "/services" | "/routes"
+        )
+        || clean_path.starts_with("/codegen/")
+        || clean_path.starts_with("/db/")
+        || clean_path.starts_with("/redis/");
+    if !is_api_route && (method == "GET" || method == "HEAD") {
+        let mount_hit = {
+            let g = state.lock().unwrap();
+            g.static_files.matches(clean_path)
+        };
+        if !mount_hit {
+            return serve_request(stream, state, &req, &req_id, start);
+        }
+        if let Some(bytes) = static_byte_response(&req, &state, clean_path) {
+            return stream.write_all(&bytes).and_then(|_| stream.flush());
+        }
+    }
+
+    serve_request(stream, state, &req, &req_id, start)
+}
+
+/// Parse-complete request → route → trace/log → write response.
+fn serve_request(
+    mut stream: TcpStream,
+    state: SharedState,
+    req: &Request,
+    req_id: &str,
+    start: Instant,
+) -> std::io::Result<()> {
+    let method = req.method.clone();
+    let path = req.path.clone();
+
     // route() handles auth enforcement + request-ID injection
-    let response = route(&req, &state, &req_id);
+    let response = route(req, &state, req_id);
 
     let status = response
         .split_whitespace()
@@ -475,6 +516,18 @@ fn route_after_rl(req: &Request, state: &SharedState, path: &str, req_id: &str) 
         return inject_request_id(inject_extra_headers(resp, &mw_ctx.extra_headers), req_id);
     }
 
+    // Body validation — registered schemas short-circuit with 400 + violations
+    if req.method == "POST" || req.method == "PUT" || req.method == "PATCH" {
+        let violations = {
+            let g = state.lock().unwrap();
+            g.validation.validate_body(&req.method, path, &req.body)
+        };
+        if !violations.is_empty() {
+            let resp = json_response(400, &violations_json(&violations));
+            return inject_request_id(inject_extra_headers(resp, &mw_ctx.extra_headers), req_id);
+        }
+    }
+
     // Run the actual handler
     let mut inner = route_inner(req, state, path);
 
@@ -602,6 +655,16 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
 
         // ── Config ────────────────────────────────────────────────────────
         ("GET", "/api/v1/config") => config_show(state),
+
+        // ── Validation ────────────────────────────────────────────────────
+        ("GET", "/api/v1/validate") => validation_list(state),
+        ("POST", "/api/v1/validate") => validation_register(req, state),
+        ("DELETE", "/api/v1/validate") => validation_remove(req, state),
+
+        // ── Static files ──────────────────────────────────────────────────
+        ("GET", "/api/v1/static") => static_list(state),
+        ("POST", "/api/v1/static") => static_register(req, state),
+        ("DELETE", "/api/v1/static") => static_remove(req, state),
 
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
@@ -1104,6 +1167,289 @@ pub fn build_hook_after(spec: &str) -> Result<crate::middleware::Hook, String> {
     Err(format!(
         "unknown after spec: {spec:?} — supported: \"log\", \"header:<key>:<value>\""
     ))
+}
+
+// ── Validation handlers ───────────────────────────────────────────────────────
+
+fn validation_list(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.validation.to_json())
+}
+
+/// Register validation rules for one field on an endpoint.
+///
+/// Body format:
+/// ```json
+/// {
+///   "endpoint": "POST:/users",
+///   "field":    "email",
+///   "rules":    ["required", "isEmail", "maxLen:255"]
+/// }
+/// ```
+///
+/// Rule vocabulary mirrors `encore.dev/validate`: `required`, `minLen:n`,
+/// `maxLen:n`, `min:x`, `max:x`, `matches:<regexp>`, `startsWith:s`,
+/// `endsWith:s`, `isEmail`, `isURL`. `"rules"` also accepts the compact
+/// string form `"required,isEmail"`.
+fn validation_register(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    if body.is_empty() {
+        return bad_request("body required");
+    }
+    let endpoint = match extract_json_field(body, "endpoint") {
+        Some(e) if !e.is_empty() => e,
+        _ => return bad_request("endpoint is required (format \"METHOD:/path\")"),
+    };
+    // Accept both "METHOD:/path" and bare "/path" (defaults to POST).
+    let endpoint = if endpoint.contains(':') {
+        endpoint
+    } else {
+        format!("POST:{endpoint}")
+    };
+    let field = match extract_json_field(body, "field") {
+        Some(f) if !f.is_empty() => f,
+        _ => return bad_request("field is required"),
+    };
+    let Some(rule_specs) = validation::parse_rules_field(body) else {
+        return bad_request("rules is required (array or comma-separated string)");
+    };
+
+    let mut rules = Vec::new();
+    for spec in &rule_specs {
+        match Rule::parse(spec) {
+            Ok(r) => rules.push(r),
+            Err(e) => return bad_request(&e),
+        }
+    }
+
+    let mut g = state.lock().unwrap();
+    let count = g.validation.add_field(&endpoint, &field, rules);
+    ok(&format!(
+        r#"{{"message":"validation registered","endpoint":"{endpoint}","field":"{field}","fields":{count}}}"#
+    ))
+}
+
+fn validation_remove(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    if body.is_empty() || !body.starts_with('{') {
+        return bad_request("JSON body required");
+    }
+    let endpoint = match extract_json_field(body, "endpoint") {
+        Some(e) if !e.is_empty() => e,
+        _ => return bad_request("endpoint is required"),
+    };
+    match extract_json_field(body, "field") {
+        Some(field) if !field.is_empty() => {
+            let removed = state
+                .lock()
+                .unwrap()
+                .validation
+                .remove_field(&endpoint, &field);
+            if removed {
+                ok(&format!(
+                    r#"{{"message":"validation removed","endpoint":"{endpoint}","field":"{field}"}}"#
+                ))
+            } else {
+                json_response(
+                    404,
+                    &format!(
+                        r#"{{"error":"no such field rule","endpoint":"{endpoint}","field":"{field}"}}"#
+                    ),
+                )
+            }
+        }
+        _ => {
+            // No field — drop the whole endpoint schema.
+            let removed = state.lock().unwrap().validation.remove_endpoint(&endpoint);
+            if removed {
+                ok(&format!(
+                    r#"{{"message":"validation schema removed","endpoint":"{endpoint}"}}"#
+                ))
+            } else {
+                json_response(
+                    404,
+                    &format!(r#"{{"error":"schema not found","endpoint":"{endpoint}"}}"#),
+                )
+            }
+        }
+    }
+}
+
+// ── Static file handlers ──────────────────────────────────────────────────────
+
+fn static_list(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.static_files.to_json())
+}
+
+/// Register a static mount.
+///
+/// Body format:
+/// ```json
+/// {
+///   "prefix":   "/assets",
+///   "dir":      "./public",
+///   "fallback": "./public/index.html",         // optional SPA fallback
+///   "headers":  {"Cache-Control": "max-age=3600"} // optional
+/// }
+/// ```
+fn static_register(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    if body.is_empty() {
+        return bad_request("body required");
+    }
+    let prefix = match extract_json_field(body, "prefix") {
+        Some(p) if !p.is_empty() => p,
+        _ => return bad_request("prefix is required"),
+    };
+    let dir = match extract_json_field(body, "dir") {
+        Some(d) if !d.is_empty() => d,
+        _ => return bad_request("dir is required"),
+    };
+    if !std::path::Path::new(&dir).is_dir() {
+        return bad_request(&format!("dir is not a directory: {dir}"));
+    }
+    let mut mount = StaticMount::new(prefix, dir);
+    if let Some(fb) = extract_json_field(body, "fallback") {
+        if fb != "null" && !fb.is_empty() {
+            mount = mount.with_fallback(fb);
+        }
+    }
+    if let Some(headers_obj) = extract_json_object(body, "headers") {
+        for (k, v) in parse_flat_json_object(&headers_obj) {
+            mount = mount.with_header(k, v);
+        }
+    }
+
+    let mut g = state.lock().unwrap();
+    let count = g.static_files.register(mount);
+    ok(&format!(
+        r#"{{"message":"static mount registered","mounts":{count}}}"#
+    ))
+}
+
+fn static_remove(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let prefix = if body.starts_with('{') {
+        extract_json_field(body, "prefix")
+    } else {
+        Some(body.trim_matches('"').to_string())
+    };
+    match prefix {
+        Some(p) if !p.is_empty() => {
+            let removed = state.lock().unwrap().static_files.remove(&p);
+            if removed {
+                ok(&format!(
+                    r#"{{"message":"static mount removed","prefix":"{p}"}}"#
+                ))
+            } else {
+                json_response(
+                    404,
+                    &format!(r#"{{"error":"mount not found","prefix":"{p}"}}"#),
+                )
+            }
+        }
+        _ => bad_request("prefix required"),
+    }
+}
+
+/// Try serving `path` from static mounts as raw bytes. Returns None when no
+/// mount matches (caller falls through to normal routing).
+///
+/// Byte-accurate on purpose: static responses bypass the String pipeline so
+/// binary assets (images, fonts, wasm) arrive uncorrupted.
+pub(crate) fn static_byte_response(
+    req: &Request,
+    state: &SharedState,
+    path: &str,
+) -> Option<Vec<u8>> {
+    let result = {
+        let g = state.lock().unwrap();
+        g.static_files.serve(
+            req.method.as_str(),
+            path,
+            req.header("if-none-match"),
+            req.header("if-modified-since"),
+        )
+    };
+    let mut out = Vec::new();
+    match result {
+        StaticResult::NotFound => None,
+        StaticResult::NotModified(headers) => {
+            out.extend_from_slice(b"HTTP/1.1 304 Not Modified\r\n");
+            for (k, v) in &headers {
+                out.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+            }
+            out.extend_from_slice(
+                format!("Access-Control-Allow-Origin: {}\r\n", cors_origin()).as_bytes(),
+            );
+            out.extend_from_slice(b"Connection: close\r\n\r\n");
+            Some(out)
+        }
+        StaticResult::Found {
+            status,
+            headers,
+            body,
+        } => {
+            let reason = if status == 200 { "OK" } else { "Unknown" };
+            out.extend_from_slice(format!("HTTP/1.1 {status} {reason}\r\n").as_bytes());
+            for (k, v) in &headers {
+                out.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+            }
+            out.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+            out.extend_from_slice(
+                format!("Access-Control-Allow-Origin: {}\r\n", cors_origin()).as_bytes(),
+            );
+            out.extend_from_slice(b"Connection: close\r\n\r\n");
+            out.extend_from_slice(&body);
+            Some(out)
+        }
+    }
+}
+
+/// Extract the full object literal following `"key": { ... }` (balanced braces).
+fn extract_json_object(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let pos = json.find(&needle)?;
+    let rest = json[pos + needle.len()..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    if !rest.starts_with('{') {
+        return None;
+    }
+    let start = json.len() - rest.len();
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut prev_esc = false;
+    for (i, c) in json[start..].char_indices() {
+        match c {
+            '"' if !prev_esc => in_str = !in_str,
+            '{' if !in_str => depth += 1,
+            '}' if !in_str => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(json[start..=start + i].to_string());
+                }
+            }
+            _ => {}
+        }
+        prev_esc = c == '\\' && !prev_esc;
+    }
+    None
+}
+
+/// Parse a flat `{ "k": "v", ... }` object into pairs.
+fn parse_flat_json_object(obj: &str) -> Vec<(String, String)> {
+    let inner = obj.trim().trim_start_matches('{').trim_end_matches('}');
+    inner
+        .split(',')
+        .filter_map(|pair| {
+            let (k, v) = pair.split_once(':')?;
+            Some((
+                k.trim().trim_matches('"').to_string(),
+                v.trim().trim_matches('"').to_string(),
+            ))
+        })
+        .collect()
 }
 
 // ── Watch / hot-reload handlers ───────────────────────────────────────────────

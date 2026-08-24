@@ -95,11 +95,11 @@
   - Auth data propagation
   - Bridge commits: `TBD`
 
-- [ ] **Validation** (commits 1649, 1665)
+- [x] **Validation** (commits 1649, 1665)
   - Request validation
-  - Response validation
-  - Custom validators
-  - Bridge commits: `TBD`
+  - Response validation (open — response-side schemas not yet implemented)
+  - Custom validators (built-in regex engine + structural isEmail/isURL)
+  - Bridge commits: `daemon/src/validation.rs` — rule vocabulary mirrors `encore.dev/validate` (`required`, `minLen`, `maxLen`, `min`, `max`, `matchesRegexp`, `startsWith`, `endsWith`, `isEmail`, `isURL`); per-endpoint schemas keyed `METHOD:/path`; built-in backtracking regex engine (classes, groups, alternation, quantifiers, anchors, zero-width guard) with JS `.test()` semantics; registry API `POST/GET/DELETE /api/v1/validate`; enforcement gate short-circuits requests with 400 + structured violations.
 
 - [ ] **Database Transactions** (commit 1800)
   - Transaction support
@@ -107,11 +107,11 @@
   - Rollback handling
   - Bridge commits: `TBD`
 
-- [ ] **Raw Endpoints** (commits 1218-1222)
-  - Custom request handling
-  - Fallback routes
-  - Static file serving (commit 1471)
-  - Bridge commits: `TBD`
+- [~] **Raw Endpoints** (commits 1218-1222) — static serving + fallback done; custom raw handlers open
+  - Custom request handling (open — raw handler registration not yet implemented)
+  - Fallback routes ✅ (SPA fallback per static mount)
+  - Static file serving (commit 1471) ✅
+  - Bridge commits: `daemon/src/staticfiles.rs` + http.rs wiring — multi-prefix mounts (`POST /api/v1/static`), SPA fallback file, strong ETags (hand-rolled FIPS 180-4 SHA-256), `If-None-Match`/`If-Modified-Since` → 304, per-mount custom headers, extension-based MIME table, path-traversal defense, byte-accurate binary responses bypassing the String pipeline, HEAD support, longest-prefix mount resolution; API routes always win over mounts.
 
 #### Related Encore Commits
 ```
