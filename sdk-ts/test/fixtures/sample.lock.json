@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "app": "demo",
+  "language": "ts",
+  "services": {
+    "api": {
+      "image": "registry.example/demo-api:1.4.2",
+      "ports": {
+        "8080": 8080,
+        "9090": 9090
+      },
+      "env": {
+        "RUST_LOG": "info",
+        "UPSTREAM": "https://api.example.internal"
+      },
+      "buckets": [
+        "media",
+        "public-assets"
+      ],
+      "topics": [
+        "events",
+        "eu-events"
+      ],
+      "databases": [
+        "main"
+      ]
+    },
+    "worker": {
+      "image": "registry.example/demo-worker:1.4.2",
+      "topics": [
+        "events"
+      ]
+    }
+  },
+  "resources": {
+    "eu-events": {
+      "type": "topic",
+      "region": "eu-central"
+    },
+    "events": {
+      "type": "topic"
+    },
+    "main": {
+      "type": "database",
+      "engine": "postgres"
+    },
+    "media": {
+      "type": "bucket",
+      "public": false
+    },
+    "nightly-rollup": {
+      "type": "cron",
+      "schedule": "0 3 * * *"
+    },
+    "public-assets": {
+      "type": "bucket",
+      "public": true
+    },
+    "stripe-key": {
+      "type": "secret"
+    }
+  },
+  "content_hash": "4ab6e326f1df50c77348c0681e274e6682604dfc719aacdc36aaaaf7c50c13c7"
+}

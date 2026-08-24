@@ -1,0 +1,21 @@
+{
+  "name": "@bridgebase/manifest",
+  "version": "0.1.0",
+  "description": "BridgeBase infra manifest builder — TypeScript emitter for bridgebase.lock.json, byte-parity-pinned against the Rust infra-manifest crate",
+  "license": "Apache-2.0",
+  "main": "src/manifest.js",
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bridgebase/bridgebase-cli.git",
+    "directory": "sdk-ts"
+  }
+}
