@@ -262,7 +262,11 @@ impl PubSubClient {
     }
 
     /// Subscribe
-    pub fn subscribe(&mut self, topic: &str, subscription_id: &str) -> Result<Subscription, String> {
+    pub fn subscribe(
+        &mut self,
+        topic: &str,
+        subscription_id: &str,
+    ) -> Result<Subscription, String> {
         self.backend.subscribe(topic, subscription_id)
     }
 

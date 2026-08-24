@@ -59,25 +59,25 @@
 
 #[derive(Debug, Clone, Default)]
 pub struct ProjectConfig {
-    pub name:    String,
+    pub name: String,
     pub version: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
-    pub http_addr:  String,
-    pub tcp_addr:   String,
+    pub http_addr: String,
+    pub tcp_addr: String,
     pub redis_addr: String,
-    pub mode:       String,
+    pub mode: String,
 }
 
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            http_addr:  "127.0.0.1:8787".into(),
-            tcp_addr:   "127.0.0.1:7878".into(),
+            http_addr: "127.0.0.1:8787".into(),
+            tcp_addr: "127.0.0.1:7878".into(),
             redis_addr: "127.0.0.1:6399".into(),
-            mode:       "full".into(),
+            mode: "full".into(),
         }
     }
 }
@@ -86,34 +86,34 @@ impl Default for DaemonConfig {
 pub struct WatchConfig {
     pub enabled: bool,
     pub poll_ms: u64,
-    pub dirs:    Vec<String>,
-    pub files:   Vec<String>,
+    pub dirs: Vec<String>,
+    pub files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct MiddlewareRule {
-    pub name:   String,
-    pub scope:  String,
+    pub name: String,
+    pub scope: String,
     pub before: Option<String>,
-    pub after:  Option<String>,
+    pub after: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct RateLimitRule {
-    pub method:      String,
-    pub path:        String,
-    pub capacity:    u64,
+    pub method: String,
+    pub path: String,
+    pub capacity: u64,
     pub refill_rate: f64,
 }
 
 /// The fully-parsed `bridge.toml`.
 #[derive(Debug, Clone, Default)]
 pub struct BridgeConfig {
-    pub project:    ProjectConfig,
-    pub daemon:     DaemonConfig,
-    pub watch:      WatchConfig,
+    pub project: ProjectConfig,
+    pub daemon: DaemonConfig,
+    pub watch: WatchConfig,
     pub middleware: Vec<MiddlewareRule>,
-    pub ratelimit:  Vec<RateLimitRule>,
+    pub ratelimit: Vec<RateLimitRule>,
 }
 
 impl BridgeConfig {
@@ -142,28 +142,39 @@ impl BridgeConfig {
         let mut cfg = BridgeConfig::default();
 
         // Defaults
-        cfg.daemon  = DaemonConfig::default();
-        cfg.watch   = WatchConfig { enabled: true, poll_ms: 500, dirs: vec![], files: vec![] };
+        cfg.daemon = DaemonConfig::default();
+        cfg.watch = WatchConfig {
+            enabled: true,
+            poll_ms: 500,
+            dirs: vec![],
+            files: vec![],
+        };
 
-        let mut section     = String::new();
-        let mut cur_mw:  Option<MiddlewareRule> = None;
-        let mut cur_rl:  Option<RateLimitRule>  = None;
+        let mut section = String::new();
+        let mut cur_mw: Option<MiddlewareRule> = None;
+        let mut cur_rl: Option<RateLimitRule> = None;
 
         for (lineno, raw_line) in content.lines().enumerate() {
             let lineno = lineno + 1;
-            let line   = raw_line.trim();
+            let line = raw_line.trim();
 
             // Skip blank lines and comments
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
 
             // Section header: [section] or [[section.sub]]
             if line.starts_with('[') {
                 // Flush pending rule before switching section
                 if let Some(mw) = cur_mw.take() {
-                    if !mw.name.is_empty() { cfg.middleware.push(mw); }
+                    if !mw.name.is_empty() {
+                        cfg.middleware.push(mw);
+                    }
                 }
                 if let Some(rl) = cur_rl.take() {
-                    if rl.capacity > 0 { cfg.ratelimit.push(rl); }
+                    if rl.capacity > 0 {
+                        cfg.ratelimit.push(rl);
+                    }
                 }
 
                 let s = line.trim_matches(|c| c == '[' || c == ']').trim();
@@ -173,7 +184,11 @@ impl BridgeConfig {
                 if section == "middleware.rules" {
                     cur_mw = Some(MiddlewareRule::default());
                 } else if section == "ratelimit.rules" {
-                    cur_rl = Some(RateLimitRule { method: "*".into(), path: "*".into(), ..Default::default() });
+                    cur_rl = Some(RateLimitRule {
+                        method: "*".into(),
+                        path: "*".into(),
+                        ..Default::default()
+                    });
                 }
                 continue;
             }
@@ -186,44 +201,54 @@ impl BridgeConfig {
 
             match section.as_str() {
                 "project" => match key {
-                    "name"    => cfg.project.name    = val.to_string(),
+                    "name" => cfg.project.name = val.to_string(),
                     "version" => cfg.project.version = val.to_string(),
                     other => return Err(format!("line {lineno}: unknown key [project].{other}")),
                 },
                 "daemon" => match key {
-                    "http_addr"  => cfg.daemon.http_addr  = val.to_string(),
-                    "tcp_addr"   => cfg.daemon.tcp_addr   = val.to_string(),
+                    "http_addr" => cfg.daemon.http_addr = val.to_string(),
+                    "tcp_addr" => cfg.daemon.tcp_addr = val.to_string(),
                     "redis_addr" => cfg.daemon.redis_addr = val.to_string(),
-                    "mode"       => cfg.daemon.mode       = val.to_string(),
+                    "mode" => cfg.daemon.mode = val.to_string(),
                     other => return Err(format!("line {lineno}: unknown key [daemon].{other}")),
                 },
                 "watch" => match key {
                     "enabled" => cfg.watch.enabled = parse_bool(val, lineno)?,
-                    "poll_ms" => cfg.watch.poll_ms  = parse_u64(val, lineno)?,
-                    "dirs"    => cfg.watch.dirs     = parse_str_array(val),
-                    "files"   => cfg.watch.files    = parse_str_array(val),
+                    "poll_ms" => cfg.watch.poll_ms = parse_u64(val, lineno)?,
+                    "dirs" => cfg.watch.dirs = parse_str_array(val),
+                    "files" => cfg.watch.files = parse_str_array(val),
                     other => return Err(format!("line {lineno}: unknown key [watch].{other}")),
                 },
                 "middleware.rules" => {
                     let mw = cur_mw.get_or_insert_with(MiddlewareRule::default);
                     match key {
-                        "name"   => mw.name   = val.to_string(),
-                        "scope"  => mw.scope  = val.to_string(),
+                        "name" => mw.name = val.to_string(),
+                        "scope" => mw.scope = val.to_string(),
                         "before" => mw.before = Some(val.to_string()),
-                        "after"  => mw.after  = Some(val.to_string()),
-                        other => return Err(format!("line {lineno}: unknown key [[middleware.rules]].{other}")),
+                        "after" => mw.after = Some(val.to_string()),
+                        other => {
+                            return Err(format!(
+                                "line {lineno}: unknown key [[middleware.rules]].{other}"
+                            ))
+                        }
                     }
                 }
                 "ratelimit.rules" => {
                     let rl = cur_rl.get_or_insert_with(|| RateLimitRule {
-                        method: "*".into(), path: "*".into(), ..Default::default()
+                        method: "*".into(),
+                        path: "*".into(),
+                        ..Default::default()
                     });
                     match key {
-                        "method"      => rl.method      = val.to_uppercase(),
-                        "path"        => rl.path        = val.to_string(),
-                        "capacity"    => rl.capacity    = parse_u64(val, lineno)?,
+                        "method" => rl.method = val.to_uppercase(),
+                        "path" => rl.path = val.to_string(),
+                        "capacity" => rl.capacity = parse_u64(val, lineno)?,
                         "refill_rate" => rl.refill_rate = parse_f64(val, lineno)?,
-                        other => return Err(format!("line {lineno}: unknown key [[ratelimit.rules]].{other}")),
+                        other => {
+                            return Err(format!(
+                                "line {lineno}: unknown key [[ratelimit.rules]].{other}"
+                            ))
+                        }
                     }
                 }
                 // Ignore unknown top-level sections silently
@@ -233,10 +258,14 @@ impl BridgeConfig {
 
         // Flush last pending rules
         if let Some(mw) = cur_mw {
-            if !mw.name.is_empty() { cfg.middleware.push(mw); }
+            if !mw.name.is_empty() {
+                cfg.middleware.push(mw);
+            }
         }
         if let Some(rl) = cur_rl {
-            if rl.capacity > 0 { cfg.ratelimit.push(rl); }
+            if rl.capacity > 0 {
+                cfg.ratelimit.push(rl);
+            }
         }
 
         Ok(cfg)
@@ -245,7 +274,7 @@ impl BridgeConfig {
     /// Generate a default `bridge.toml` for a new project with the given name.
     pub fn default_toml(project_name: &str) -> String {
         format!(
-r#"# bridge.toml — Bridge Framework project configuration
+            r#"# bridge.toml — Bridge Framework project configuration
 # https://github.com/bridge-framework
 
 [project]
@@ -331,7 +360,10 @@ pub fn apply(cfg: &BridgeConfig, state: &crate::state::SharedState) {
         let scope = match crate::http::parse_scope(&mw_rule.scope) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("[bridge] config: middleware {}: bad scope — {e}", mw_rule.name);
+                eprintln!(
+                    "[bridge] config: middleware {}: bad scope — {e}",
+                    mw_rule.name
+                );
                 continue;
             }
         };
@@ -341,13 +373,25 @@ pub fn apply(cfg: &BridgeConfig, state: &crate::state::SharedState) {
         if let Some(spec) = &mw_rule.before {
             match crate::http::build_hook_before(spec) {
                 Ok(hook) => builder = builder.before(hook),
-                Err(e)   => { eprintln!("[bridge] config: middleware {}: before hook — {e}", mw_rule.name); continue; }
+                Err(e) => {
+                    eprintln!(
+                        "[bridge] config: middleware {}: before hook — {e}",
+                        mw_rule.name
+                    );
+                    continue;
+                }
             }
         }
         if let Some(spec) = &mw_rule.after {
             match crate::http::build_hook_after(spec) {
                 Ok(hook) => builder = builder.after(hook),
-                Err(e)   => { eprintln!("[bridge] config: middleware {}: after hook — {e}", mw_rule.name); continue; }
+                Err(e) => {
+                    eprintln!(
+                        "[bridge] config: middleware {}: after hook — {e}",
+                        mw_rule.name
+                    );
+                    continue;
+                }
             }
         }
 
@@ -359,7 +403,8 @@ pub fn apply(cfg: &BridgeConfig, state: &crate::state::SharedState) {
     for rl_rule in &cfg.ratelimit {
         use crate::ratelimit::BucketKey;
         let key = BucketKey::new(&rl_rule.method, &rl_rule.path);
-        g.rate_limiter.add_rule(key, rl_rule.capacity, rl_rule.refill_rate);
+        g.rate_limiter
+            .add_rule(key, rl_rule.capacity, rl_rule.refill_rate);
     }
 }
 
@@ -369,12 +414,12 @@ pub fn apply(cfg: &BridgeConfig, state: &crate::state::SharedState) {
 fn parse_kv(line: &str) -> Option<(&str, &str)> {
     let eq = line.find('=')?;
     let key = line[..eq].trim();
-    let raw = line[eq+1..].trim();
+    let raw = line[eq + 1..].trim();
     // Strip inline comment after value (outside of strings)
     let raw = if raw.starts_with('"') {
         // Quoted string — find closing quote
         let inner = &raw[1..];
-        let end   = inner.find('"')?;
+        let end = inner.find('"')?;
         &inner[..end]
     } else {
         // Unquoted — strip trailing comment
@@ -386,7 +431,8 @@ fn parse_kv(line: &str) -> Option<(&str, &str)> {
 /// Parse a TOML inline string array: `["a", "b", "c"]` → `vec!["a","b","c"]`.
 fn parse_str_array(s: &str) -> Vec<String> {
     let inner = s.trim().trim_start_matches('[').trim_end_matches(']');
-    inner.split(',')
+    inner
+        .split(',')
         .map(|item| item.trim().trim_matches('"').to_string())
         .filter(|s| !s.is_empty())
         .collect()
@@ -394,19 +440,21 @@ fn parse_str_array(s: &str) -> Vec<String> {
 
 fn parse_bool(s: &str, lineno: usize) -> Result<bool, String> {
     match s.trim() {
-        "true"  => Ok(true),
+        "true" => Ok(true),
         "false" => Ok(false),
-        other   => Err(format!("line {lineno}: expected true/false, got {other:?}")),
+        other => Err(format!("line {lineno}: expected true/false, got {other:?}")),
     }
 }
 
 fn parse_u64(s: &str, lineno: usize) -> Result<u64, String> {
-    s.trim().parse::<u64>()
+    s.trim()
+        .parse::<u64>()
         .map_err(|_| format!("line {lineno}: expected integer, got {s:?}"))
 }
 
 fn parse_f64(s: &str, lineno: usize) -> Result<f64, String> {
-    s.trim().parse::<f64>()
+    s.trim()
+        .parse::<f64>()
         .map_err(|_| format!("line {lineno}: expected float, got {s:?}"))
 }
 
@@ -416,7 +464,9 @@ fn parse_f64(s: &str, lineno: usize) -> Result<f64, String> {
 mod tests {
     use super::*;
 
-    fn parse(s: &str) -> BridgeConfig { BridgeConfig::parse(s).expect("parse failed") }
+    fn parse(s: &str) -> BridgeConfig {
+        BridgeConfig::parse(s).expect("parse failed")
+    }
 
     // ── Blank / comments ──────────────────────────────────────────────────────
 
@@ -424,7 +474,7 @@ mod tests {
     fn empty_content_produces_defaults() {
         let cfg = parse("");
         assert_eq!(cfg.daemon.http_addr, "127.0.0.1:8787");
-        assert_eq!(cfg.daemon.mode,      "full");
+        assert_eq!(cfg.daemon.mode, "full");
         assert!(cfg.watch.enabled);
         assert_eq!(cfg.watch.poll_ms, 500);
     }
@@ -439,7 +489,7 @@ mod tests {
     #[test]
     fn project_section_parsed() {
         let cfg = parse("[project]\nname = \"myapp\"\nversion = \"1.2.3\"\n");
-        assert_eq!(cfg.project.name,    "myapp");
+        assert_eq!(cfg.project.name, "myapp");
         assert_eq!(cfg.project.version, "1.2.3");
     }
 
@@ -451,8 +501,8 @@ mod tests {
             "[daemon]\nhttp_addr = \"0.0.0.0:9090\"\ntcp_addr = \"0.0.0.0:9091\"\nmode = \"lite\"\n"
         );
         assert_eq!(cfg.daemon.http_addr, "0.0.0.0:9090");
-        assert_eq!(cfg.daemon.tcp_addr,  "0.0.0.0:9091");
-        assert_eq!(cfg.daemon.mode,      "lite");
+        assert_eq!(cfg.daemon.tcp_addr, "0.0.0.0:9091");
+        assert_eq!(cfg.daemon.mode, "lite");
     }
 
     // ── [watch] ───────────────────────────────────────────────────────────────
@@ -464,7 +514,7 @@ mod tests {
         );
         assert!(!cfg.watch.enabled);
         assert_eq!(cfg.watch.poll_ms, 250);
-        assert_eq!(cfg.watch.dirs,  vec![".", "services"]);
+        assert_eq!(cfg.watch.dirs, vec![".", "services"]);
         assert_eq!(cfg.watch.files, vec!["app.bridge"]);
     }
 
@@ -475,10 +525,10 @@ mod tests {
         let src = "[[middleware.rules]]\nname = \"logger\"\nscope = \"global\"\nbefore = \"log\"\n";
         let cfg = parse(src);
         assert_eq!(cfg.middleware.len(), 1);
-        assert_eq!(cfg.middleware[0].name,   "logger");
-        assert_eq!(cfg.middleware[0].scope,  "global");
+        assert_eq!(cfg.middleware[0].name, "logger");
+        assert_eq!(cfg.middleware[0].scope, "global");
         assert_eq!(cfg.middleware[0].before, Some("log".to_string()));
-        assert_eq!(cfg.middleware[0].after,  None);
+        assert_eq!(cfg.middleware[0].after, None);
     }
 
     #[test]
@@ -499,8 +549,8 @@ mod tests {
         let src = "[[ratelimit.rules]]\nmethod = \"POST\"\npath = \"/submit\"\ncapacity = 10\nrefill_rate = 1.0\n";
         let cfg = parse(src);
         assert_eq!(cfg.ratelimit.len(), 1);
-        assert_eq!(cfg.ratelimit[0].method,   "POST");
-        assert_eq!(cfg.ratelimit[0].path,     "/submit");
+        assert_eq!(cfg.ratelimit[0].method, "POST");
+        assert_eq!(cfg.ratelimit[0].path, "/submit");
         assert_eq!(cfg.ratelimit[0].capacity, 10);
         assert!((cfg.ratelimit[0].refill_rate - 1.0).abs() < 1e-9);
     }
@@ -528,12 +578,18 @@ mod tests {
     #[test]
     fn full_default_toml_parses() {
         let toml = BridgeConfig::default_toml("testapp");
-        let cfg  = BridgeConfig::parse(&toml).expect("default toml should parse");
+        let cfg = BridgeConfig::parse(&toml).expect("default toml should parse");
         assert_eq!(cfg.project.name, "testapp");
-        assert_eq!(cfg.daemon.mode,  "full");
+        assert_eq!(cfg.daemon.mode, "full");
         assert!(cfg.watch.enabled);
-        assert!(!cfg.middleware.is_empty(), "default toml should have middleware");
-        assert!(!cfg.ratelimit.is_empty(),  "default toml should have ratelimit rules");
+        assert!(
+            !cfg.middleware.is_empty(),
+            "default toml should have middleware"
+        );
+        assert!(
+            !cfg.ratelimit.is_empty(),
+            "default toml should have ratelimit rules"
+        );
     }
 
     // ── Error cases ───────────────────────────────────────────────────────────
@@ -595,7 +651,9 @@ mod tests {
 
     #[test]
     fn load_from_nonexistent_dir_returns_none() {
-        assert!(BridgeConfig::load_from_dir("/no/such/dir/xyz123").unwrap().is_none());
+        assert!(BridgeConfig::load_from_dir("/no/such/dir/xyz123")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -605,7 +663,8 @@ mod tests {
         let path = dir.join("bridge.toml");
         std::fs::write(&path, "[project]\nname = \"loaded-app\"\n").unwrap();
         let cfg = BridgeConfig::load_from_dir(&dir.to_string_lossy())
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(cfg.project.name, "loaded-app");
         let _ = std::fs::remove_file(path);
     }

@@ -45,37 +45,42 @@ use std::time::{Duration, SystemTime};
 /// Result of the last compile attempt for a watched file.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompileResult {
-    Ok(String),          // TypeScript client source
-    Err(String),         // compiler error message
-    Pending,             // not yet compiled
+    Ok(String),  // TypeScript client source
+    Err(String), // compiler error message
+    Pending,     // not yet compiled
 }
 
 /// Per-file watch metadata.
 #[derive(Debug, Clone)]
 pub struct WatchedFile {
-    pub path:          String,
+    pub path: String,
     /// Modification time at last check (seconds since UNIX epoch).
-    pub last_mtime:    Option<u64>,
+    pub last_mtime: Option<u64>,
     /// Count of recompile events triggered.
-    pub change_count:  u64,
+    pub change_count: u64,
     /// Result of the most recent compile.
-    pub last_result:   CompileResult,
+    pub last_result: CompileResult,
 }
 
 impl WatchedFile {
     pub fn new(path: impl Into<String>) -> Self {
-        Self { path: path.into(), last_mtime: None, change_count: 0, last_result: CompileResult::Pending }
+        Self {
+            path: path.into(),
+            last_mtime: None,
+            change_count: 0,
+            last_result: CompileResult::Pending,
+        }
     }
 
     pub fn to_json(&self) -> String {
         let status = match &self.last_result {
-            CompileResult::Ok(_)      => "ok",
-            CompileResult::Err(_)     => "error",
-            CompileResult::Pending    => "pending",
+            CompileResult::Ok(_) => "ok",
+            CompileResult::Err(_) => "error",
+            CompileResult::Pending => "pending",
         };
         let err_msg = match &self.last_result {
             CompileResult::Err(e) => format!(",\"error\":\"{}\"", e.replace('"', "\\\"")),
-            _                     => String::new(),
+            _ => String::new(),
         };
         format!(
             r#"{{"path":"{}","status":"{}","changes":{}{}}}"#,
@@ -89,8 +94,8 @@ impl WatchedFile {
 /// A single connected SSE client.  The sender end is stored; when the client
 /// disconnects the channel is broken and we prune the dead sender.
 pub struct SseSender {
-    pub id:     u64,
-    sender:     std::sync::mpsc::SyncSender<String>,
+    pub id: u64,
+    sender: std::sync::mpsc::SyncSender<String>,
 }
 
 impl SseSender {
@@ -104,36 +109,39 @@ impl SseSender {
 #[derive(Default)]
 pub struct WatchRegistry {
     /// Directories being scanned (for API display).
-    pub watched_dirs:  Vec<String>,
+    pub watched_dirs: Vec<String>,
     /// Per-file watch state.
-    pub files:         Vec<WatchedFile>,
+    pub files: Vec<WatchedFile>,
     /// Active SSE connections.
-    pub sse_clients:   Vec<SseSender>,
+    pub sse_clients: Vec<SseSender>,
     /// Next SSE client ID.
-    next_client_id:    u64,
+    next_client_id: u64,
     /// Poll interval in milliseconds.
-    pub poll_ms:        u64,
+    pub poll_ms: u64,
     /// Whether the watcher background thread is running.
-    pub running:        bool,
+    pub running: bool,
     /// Total events broadcast.
-    pub events_total:  u64,
+    pub events_total: u64,
 }
 
 impl std::fmt::Debug for WatchRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WatchRegistry")
             .field("watched_dirs", &self.watched_dirs)
-            .field("files",        &self.files.len())
-            .field("sse_clients",  &self.sse_clients.len())
-            .field("poll_ms",      &self.poll_ms)
-            .field("running",      &self.running)
+            .field("files", &self.files.len())
+            .field("sse_clients", &self.sse_clients.len())
+            .field("poll_ms", &self.poll_ms)
+            .field("running", &self.running)
             .finish()
     }
 }
 
 impl WatchRegistry {
     pub fn new() -> Self {
-        Self { poll_ms: 500, ..Default::default() }
+        Self {
+            poll_ms: 500,
+            ..Default::default()
+        }
     }
 
     /// Add a directory to watch (scans for `.bridge` files).
@@ -233,7 +241,7 @@ pub fn start_watcher(state: Arc<Mutex<crate::state::State>>) {
                     let g = state.lock().unwrap();
                     match g.watcher.files.iter().find(|f| f.path == path) {
                         Some(wf) => wf.last_mtime != mtime,
-                        None     => false,
+                        None => false,
                     }
                 };
 
@@ -243,14 +251,16 @@ pub fn start_watcher(state: Arc<Mutex<crate::state::State>>) {
 
                     // Update the file entry
                     if let Some(wf) = g.watcher.files.iter_mut().find(|f| f.path == path) {
-                        wf.last_mtime   = mtime;
+                        wf.last_mtime = mtime;
                         wf.change_count += 1;
-                        wf.last_result  = result.clone();
+                        wf.last_result = result.clone();
                     }
 
                     // Update the service registry on success
                     if let CompileResult::Ok(ref ts) = result {
-                        if let Ok(file) = compiler::parse(&std::fs::read_to_string(&path).unwrap_or_default()) {
+                        if let Ok(file) =
+                            compiler::parse(&std::fs::read_to_string(&path).unwrap_or_default())
+                        {
                             if let Some(first) = file.services.first() {
                                 g.store.put("codegen", &first.name, ts.clone());
                             }
@@ -262,7 +272,8 @@ pub fn start_watcher(state: Arc<Mutex<crate::state::State>>) {
                     // Build SSE event
                     let ts_now = SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
-                        .map(|d| d.as_secs()).unwrap_or(0);
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
                     let event = match &result {
                         CompileResult::Ok(_) => format!(
                             "event: reload\ndata: {{\"file\":\"{}\",\"status\":\"ok\",\"ts\":{}}}\n\n",
@@ -282,7 +293,11 @@ pub fn start_watcher(state: Arc<Mutex<crate::state::State>>) {
                     } else {
                         crate::state::LogLevel::Warn
                     };
-                    g.push_log(level, &format!("[watcher] recompiled {path}"), Default::default());
+                    g.push_log(
+                        level,
+                        &format!("[watcher] recompiled {path}"),
+                        Default::default(),
+                    );
                 }
             }
         }
@@ -305,12 +320,12 @@ pub fn file_mtime(path: &str) -> Option<u64> {
 /// Read and compile a `.bridge` file, returning the TypeScript client or an error.
 pub fn recompile_file(path: &str) -> CompileResult {
     let source = match std::fs::read_to_string(path) {
-        Ok(s)  => s,
+        Ok(s) => s,
         Err(e) => return CompileResult::Err(format!("read error: {e}")),
     };
     match compiler::parse(&source) {
         Ok(file) => CompileResult::Ok(codegen::generate_typescript(&file)),
-        Err(e)   => CompileResult::Err(e),
+        Err(e) => CompileResult::Err(e),
     }
 }
 
@@ -345,9 +360,12 @@ mod tests {
         wf.last_result = CompileResult::Ok("// ts".into());
         wf.change_count = 3;
         let j = wf.to_json();
-        assert!(j.contains("\"status\":\"ok\""),  "got: {j}");
-        assert!(j.contains("\"changes\":3"),       "got: {j}");
-        assert!(!j.contains("error"),              "ok result should not contain error key: {j}");
+        assert!(j.contains("\"status\":\"ok\""), "got: {j}");
+        assert!(j.contains("\"changes\":3"), "got: {j}");
+        assert!(
+            !j.contains("error"),
+            "ok result should not contain error key: {j}"
+        );
     }
 
     #[test]
@@ -356,7 +374,7 @@ mod tests {
         wf.last_result = CompileResult::Err("parse failed".into());
         let j = wf.to_json();
         assert!(j.contains("\"status\":\"error\""), "got: {j}");
-        assert!(j.contains("parse failed"),          "got: {j}");
+        assert!(j.contains("parse failed"), "got: {j}");
     }
 
     // ── WatchRegistry ─────────────────────────────────────────────────────────
@@ -398,10 +416,10 @@ mod tests {
         let mut reg = WatchRegistry::new();
         reg.watch_file("/svc.bridge");
         let j = reg.to_json();
-        assert!(j.contains("watching"),      "got: {j}");
-        assert!(j.contains("poll_ms"),        "got: {j}");
-        assert!(j.contains("events_total"),   "got: {j}");
-        assert!(j.contains("svc.bridge"),     "got: {j}");
+        assert!(j.contains("watching"), "got: {j}");
+        assert!(j.contains("poll_ms"), "got: {j}");
+        assert!(j.contains("events_total"), "got: {j}");
+        assert!(j.contains("svc.bridge"), "got: {j}");
     }
 
     // ── SSE broadcast ─────────────────────────────────────────────────────────
@@ -450,7 +468,10 @@ mod tests {
     #[test]
     fn recompile_missing_file_is_error() {
         let result = recompile_file("/nonexistent/path/does_not_exist.bridge");
-        assert!(matches!(result, CompileResult::Err(_)), "expected Err for missing file");
+        assert!(
+            matches!(result, CompileResult::Err(_)),
+            "expected Err for missing file"
+        );
     }
 
     #[test]
@@ -460,7 +481,10 @@ mod tests {
         let path = dir.join("bridge_watcher_test.bridge");
         std::fs::write(&path, "service hello\nendpoint ping GET /ping\n").unwrap();
         let result = recompile_file(&path.to_string_lossy());
-        assert!(matches!(result, CompileResult::Ok(_)), "expected Ok, got: {result:?}");
+        assert!(
+            matches!(result, CompileResult::Ok(_)),
+            "expected Ok, got: {result:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -470,7 +494,10 @@ mod tests {
         let path = dir.join("bridge_watcher_invalid_test.bridge");
         std::fs::write(&path, "this is not valid bridge DSL !!!\n").unwrap();
         let result = recompile_file(&path.to_string_lossy());
-        assert!(matches!(result, CompileResult::Err(_)), "expected Err for invalid content");
+        assert!(
+            matches!(result, CompileResult::Err(_)),
+            "expected Err for invalid content"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -483,7 +510,7 @@ mod tests {
 
     #[test]
     fn file_mtime_existing_file_returns_some() {
-        let dir  = std::env::temp_dir();
+        let dir = std::env::temp_dir();
         let path = dir.join("bridge_mtime_test.tmp");
         std::fs::write(&path, "x").unwrap();
         let mtime = file_mtime(&path.to_string_lossy());

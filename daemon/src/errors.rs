@@ -45,38 +45,38 @@ pub enum Code {
 impl Code {
     pub fn as_str(self) -> &'static str {
         match self {
-            Code::Unknown             => "unknown",
-            Code::InvalidArgument     => "invalid_argument",
-            Code::NotFound            => "not_found",
-            Code::PermissionDenied    => "permission_denied",
-            Code::Unauthenticated     => "unauthenticated",
-            Code::ResourceExhausted   => "resource_exhausted",
-            Code::FailedPrecondition  => "failed_precondition",
-            Code::Cancelled           => "cancelled",
-            Code::AlreadyExists       => "already_exists",
-            Code::Internal            => "internal",
-            Code::Unimplemented       => "unimplemented",
-            Code::Unavailable         => "unavailable",
-            Code::DeadlineExceeded    => "deadline_exceeded",
+            Code::Unknown => "unknown",
+            Code::InvalidArgument => "invalid_argument",
+            Code::NotFound => "not_found",
+            Code::PermissionDenied => "permission_denied",
+            Code::Unauthenticated => "unauthenticated",
+            Code::ResourceExhausted => "resource_exhausted",
+            Code::FailedPrecondition => "failed_precondition",
+            Code::Cancelled => "cancelled",
+            Code::AlreadyExists => "already_exists",
+            Code::Internal => "internal",
+            Code::Unimplemented => "unimplemented",
+            Code::Unavailable => "unavailable",
+            Code::DeadlineExceeded => "deadline_exceeded",
         }
     }
 
     /// HTTP status code equivalent.
     pub fn http_status(self) -> u16 {
         match self {
-            Code::Unknown             => 500,
-            Code::InvalidArgument     => 400,
-            Code::NotFound            => 404,
-            Code::PermissionDenied    => 403,
-            Code::Unauthenticated     => 401,
-            Code::ResourceExhausted   => 429,
-            Code::FailedPrecondition  => 412,
-            Code::Cancelled           => 499,
-            Code::AlreadyExists       => 409,
-            Code::Internal            => 500,
-            Code::Unimplemented       => 501,
-            Code::Unavailable         => 503,
-            Code::DeadlineExceeded    => 504,
+            Code::Unknown => 500,
+            Code::InvalidArgument => 400,
+            Code::NotFound => 404,
+            Code::PermissionDenied => 403,
+            Code::Unauthenticated => 401,
+            Code::ResourceExhausted => 429,
+            Code::FailedPrecondition => 412,
+            Code::Cancelled => 499,
+            Code::AlreadyExists => 409,
+            Code::Internal => 500,
+            Code::Unimplemented => 501,
+            Code::Unavailable => 503,
+            Code::DeadlineExceeded => 504,
         }
     }
 
@@ -93,7 +93,7 @@ impl Code {
             501 => Code::Unimplemented,
             503 => Code::Unavailable,
             504 => Code::DeadlineExceeded,
-            _   => Code::Internal,
+            _ => Code::Internal,
         }
     }
 }
@@ -109,13 +109,16 @@ impl fmt::Display for Code {
 /// Structured key-value detail attached to an error.
 #[derive(Debug, Clone)]
 pub struct Detail {
-    pub key:   String,
+    pub key: String,
     pub value: String,
 }
 
 impl Detail {
     pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
-        Detail { key: key.into(), value: value.into() }
+        Detail {
+            key: key.into(),
+            value: value.into(),
+        }
     }
 }
 
@@ -130,15 +133,15 @@ impl Detail {
 /// - an optional cause chain
 #[derive(Debug, Clone)]
 pub struct BridgeError {
-    pub code:     Code,
+    pub code: Code,
     /// Message safe to send to external callers.
-    pub message:  String,
+    pub message: String,
     /// Internal detail — never sent to callers in production.
     pub internal: Option<String>,
     /// Structured key-value details.
-    pub details:  Vec<Detail>,
+    pub details: Vec<Detail>,
     /// Wrapped cause.
-    pub cause:    Option<Box<BridgeError>>,
+    pub cause: Option<Box<BridgeError>>,
 }
 
 impl BridgeError {
@@ -147,16 +150,15 @@ impl BridgeError {
     pub fn new(code: Code, message: impl Into<String>) -> Self {
         BridgeError {
             code,
-            message:  message.into(),
+            message: message.into(),
             internal: None,
-            details:  Vec::new(),
-            cause:    None,
+            details: Vec::new(),
+            cause: None,
         }
     }
 
     pub fn internal(msg: impl Into<String>) -> Self {
-        Self::new(Code::Internal, "internal server error")
-            .with_internal(msg)
+        Self::new(Code::Internal, "internal server error").with_internal(msg)
     }
 
     pub fn not_found(msg: impl Into<String>) -> Self {
@@ -192,32 +194,41 @@ impl BridgeError {
         self
     }
 
-    pub fn wrap_std(code: Code, public_msg: impl Into<String>, err: impl std::error::Error) -> Self {
-        Self::new(code, public_msg)
-            .with_internal(err.to_string())
+    pub fn wrap_std(
+        code: Code,
+        public_msg: impl Into<String>,
+        err: impl std::error::Error,
+    ) -> Self {
+        Self::new(code, public_msg).with_internal(err.to_string())
     }
 
     // ── Output ────────────────────────────────────────────────────────────
 
     /// JSON for external callers — omits `internal` field.
     pub fn to_public_json(&self) -> String {
-        let details: String = self.details.iter()
+        let details: String = self
+            .details
+            .iter()
             .map(|d| format!(",{{\"key\":\"{}\",\"value\":\"{}\"}}", d.key, d.value))
             .collect();
         format!(
             r#"{{"code":"{code}","message":"{msg}","details":[{details}]}}"#,
-            code    = self.code.as_str(),
-            msg     = self.message.replace('"', "\\\""),
+            code = self.code.as_str(),
+            msg = self.message.replace('"', "\\\""),
             details = details.trim_start_matches(','),
         )
     }
 
     /// Full JSON including internal details — for logging only.
     pub fn to_internal_json(&self) -> String {
-        let internal = self.internal.as_deref()
+        let internal = self
+            .internal
+            .as_deref()
             .map(|s| format!(",\"internal\":\"{}\"", s.replace('"', "\\\"")))
             .unwrap_or_default();
-        let cause = self.cause.as_ref()
+        let cause = self
+            .cause
+            .as_ref()
             .map(|c| format!(",\"cause\":{}", c.to_internal_json()))
             .unwrap_or_default();
         let base = self.to_public_json();
@@ -274,11 +285,13 @@ mod tests {
 
     #[test]
     fn public_json_excludes_internal() {
-        let err = BridgeError::internal("secret DB connection string")
-            .with_detail("field", "email");
+        let err =
+            BridgeError::internal("secret DB connection string").with_detail("field", "email");
         let json = err.to_public_json();
-        assert!(!json.contains("secret DB connection string"),
-            "internal message leaked: {json}");
+        assert!(
+            !json.contains("secret DB connection string"),
+            "internal message leaked: {json}"
+        );
         assert!(json.contains("internal server error"));
         assert!(json.contains("field"));
     }
@@ -295,9 +308,8 @@ mod tests {
 
     #[test]
     fn cause_chain_display() {
-        let root  = BridgeError::new(Code::Unavailable, "database offline");
-        let outer = BridgeError::new(Code::Internal, "failed to load user")
-            .with_cause(root);
+        let root = BridgeError::new(Code::Unavailable, "database offline");
+        let outer = BridgeError::new(Code::Internal, "failed to load user").with_cause(root);
         let text = outer.to_string();
         assert!(text.contains("failed to load user"));
         assert!(text.contains("database offline"));

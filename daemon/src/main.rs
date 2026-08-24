@@ -34,9 +34,9 @@ mod sqldb;
 mod state;
 mod streaming;
 mod tcp;
+mod tracing;
 mod transactions;
 mod transport;
-mod tracing;
 mod watcher;
 
 use std::sync::{Arc, Mutex};
@@ -44,19 +44,19 @@ use std::thread;
 
 use state::State;
 
-const DEFAULT_TCP_ADDR:   &str = "127.0.0.1:7878";
-const DEFAULT_HTTP_ADDR:  &str = "127.0.0.1:8787";
+const DEFAULT_TCP_ADDR: &str = "127.0.0.1:7878";
+const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:8787";
 const DEFAULT_REDIS_ADDR: &str = "127.0.0.1:6399";
 
 fn main() -> std::io::Result<()> {
-    let tcp_addr   = env("BRIDGE_TCP_ADDR",   DEFAULT_TCP_ADDR);
-    let http_addr  = env("BRIDGE_HTTP_ADDR",  DEFAULT_HTTP_ADDR);
+    let tcp_addr = env("BRIDGE_TCP_ADDR", DEFAULT_TCP_ADDR);
+    let http_addr = env("BRIDGE_HTTP_ADDR", DEFAULT_HTTP_ADDR);
     let redis_addr = env("BRIDGE_REDIS_ADDR", DEFAULT_REDIS_ADDR);
 
     // ── 1. Start miniredis ────────────────────────────────────────────────
     let (redis_info_addr, redis_conn_count) = match miniredis::MiniRedis::start(&redis_addr) {
         Ok((server, _handle)) => {
-            let addr  = server.addr.to_string();
+            let addr = server.addr.to_string();
             let conns = Arc::clone(&server.connection_count);
             eprintln!("[bridge] miniredis on {addr}");
             (Some(addr), Some(conns))
@@ -90,7 +90,7 @@ fn main() -> std::io::Result<()> {
     // ── 3. HTTP server (background thread) ───────────────────────────────
     {
         let state = Arc::clone(&shared);
-        let addr  = http_addr.clone();
+        let addr = http_addr.clone();
         thread::spawn(move || {
             if let Err(e) = http::run_http_server(&addr, state) {
                 eprintln!("[bridge] HTTP error: {e}");

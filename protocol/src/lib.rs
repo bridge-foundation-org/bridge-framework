@@ -92,7 +92,9 @@ impl AuthScheme {
         match s.trim().to_lowercase().as_str() {
             "bearer" => Ok(AuthScheme::Bearer),
             "api_key" | "apikey" => Ok(AuthScheme::ApiKey),
-            other => Err(format!("unknown auth scheme: {other} (use: bearer|api_key)")),
+            other => Err(format!(
+                "unknown auth scheme: {other} (use: bearer|api_key)"
+            )),
         }
     }
 }
@@ -151,74 +153,157 @@ pub enum Command {
     SetMode(DaemonMode),
 
     // ── Compiler pipeline ────────────────────────────────────────────────────
-    Compile { source: String },
-    CompileFile { path: String },
+    Compile {
+        source: String,
+    },
+    CompileFile {
+        path: String,
+    },
 
     // ── Service / route introspection ────────────────────────────────────────
     ServicesList,
     RoutesList,
 
     // ── In-memory KV store ───────────────────────────────────────────────────
-    DbPut { ns: String, key: String, value: String },
-    DbGet { ns: String, key: String },
-    DbDel { ns: String, key: String },
-    DbKeys { ns: String },
-    DbFlush { ns: String },
+    DbPut {
+        ns: String,
+        key: String,
+        value: String,
+    },
+    DbGet {
+        ns: String,
+        key: String,
+    },
+    DbDel {
+        ns: String,
+        key: String,
+    },
+    DbKeys {
+        ns: String,
+    },
+    DbFlush {
+        ns: String,
+    },
 
     // ── Docker Postgres ──────────────────────────────────────────────────────
-    PgCreate { name: String },
+    PgCreate {
+        name: String,
+    },
     PgStatus,
-    PgMigrate { sql: String },
-    PgDestroy { name: String },
+    PgMigrate {
+        sql: String,
+    },
+    PgDestroy {
+        name: String,
+    },
 
     // ── Embedded Redis (miniredis) ───────────────────────────────────────────
     RedisStatus,
     RedisPing,
-    RedisGet { key: String },
-    RedisSet { key: String, value: String },
-    RedisSetEx { key: String, seconds: u64, value: String },
-    RedisDel { key: String },
-    RedisKeys { pattern: String },
-    RedisTtl { key: String },
-    RedisExpire { key: String, seconds: u64 },
+    RedisGet {
+        key: String,
+    },
+    RedisSet {
+        key: String,
+        value: String,
+    },
+    RedisSetEx {
+        key: String,
+        seconds: u64,
+        value: String,
+    },
+    RedisDel {
+        key: String,
+    },
+    RedisKeys {
+        pattern: String,
+    },
+    RedisTtl {
+        key: String,
+    },
+    RedisExpire {
+        key: String,
+        seconds: u64,
+    },
     RedisFlush,
 
     // ── Auth ─────────────────────────────────────────────────────────────────
     AuthStatus,
-    AuthSet { scheme: AuthScheme, token: String },
+    AuthSet {
+        scheme: AuthScheme,
+        token: String,
+    },
     AuthClear,
 
     // ── Traces ───────────────────────────────────────────────────────────────
-    TraceList { limit: Option<usize>, filter: Option<TraceFilter> },
-    TraceGet { id: String },
+    TraceList {
+        limit: Option<usize>,
+        filter: Option<TraceFilter>,
+    },
+    TraceGet {
+        id: String,
+    },
     TraceClear,
-    TraceExport { format: ExportFormat },
+    TraceExport {
+        format: ExportFormat,
+    },
 
     // ── Metrics ──────────────────────────────────────────────────────────────
     MetricsList,
-    MetricsGet { name: String },
+    MetricsGet {
+        name: String,
+    },
     MetricsClear,
-    MetricsExport { format: ExportFormat },
+    MetricsExport {
+        format: ExportFormat,
+    },
 
     // ── Pub/Sub ──────────────────────────────────────────────────────────────
-    PubSubPublish { topic: String, payload: String },
-    PubSubSubscribe { topic: String, subscriber: String },
-    PubSubPull { topic: String, subscriber: String },
-    PubSubAck { msg_id: String },
-    PubSubNack { msg_id: String, reason: String },
+    PubSubPublish {
+        topic: String,
+        payload: String,
+    },
+    PubSubSubscribe {
+        topic: String,
+        subscriber: String,
+    },
+    PubSubPull {
+        topic: String,
+        subscriber: String,
+    },
+    PubSubAck {
+        msg_id: String,
+    },
+    PubSubNack {
+        msg_id: String,
+        reason: String,
+    },
     PubSubStatus,
 
     // ── Secrets ──────────────────────────────────────────────────────────────
-    SecretSet { name: String, value: String },
-    SecretGet { name: String },
-    SecretDelete { name: String },
+    SecretSet {
+        name: String,
+        value: String,
+    },
+    SecretGet {
+        name: String,
+    },
+    SecretDelete {
+        name: String,
+    },
     SecretList,
-    SecretCheck { names: Vec<String> },
+    SecretCheck {
+        names: Vec<String>,
+    },
 
     // ── Streaming endpoints ───────────────────────────────────────────────────
     StreamList,
-    StreamOpen { path: String },
-    StreamClose { id: String },
+    StreamOpen {
+        path: String,
+    },
+    StreamClose {
+        id: String,
+    },
     StreamStatus,
 }
 
@@ -267,7 +352,7 @@ impl fmt::Display for Response {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trace {
     pub id: String,
-    pub start_time: u64,  // Unix timestamp in ms
+    pub start_time: u64, // Unix timestamp in ms
     pub duration_ms: u64,
     pub service: String,
     pub endpoint: String,
@@ -282,8 +367,14 @@ impl Trace {
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"id":"{}","start_time":{},"duration_ms":{},"service":"{}","endpoint":"{}","method":"{}","path":"{}","status_code":{},"spans":[],"logs":[]}}"#,
-            self.id, self.start_time, self.duration_ms, self.service,
-            self.endpoint, self.method, self.path, self.status_code
+            self.id,
+            self.start_time,
+            self.duration_ms,
+            self.service,
+            self.endpoint,
+            self.method,
+            self.path,
+            self.status_code
         )
     }
 }
@@ -302,7 +393,7 @@ pub struct Span {
 /// A log entry within a trace
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogEntry {
-    pub timestamp: u64,  // Unix timestamp in ms
+    pub timestamp: u64, // Unix timestamp in ms
     pub level: LogLevel,
     pub message: String,
     pub fields: HashMap<String, String>,
@@ -343,7 +434,14 @@ pub struct Metric {
 
 impl fmt::Display for Metric {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}={} kind={:?} value={}", self.name, self.kind.as_str(), self.kind, self.value)
+        write!(
+            f,
+            "{}={} kind={:?} value={}",
+            self.name,
+            self.kind.as_str(),
+            self.kind,
+            self.value
+        )
     }
 }
 
@@ -383,10 +481,13 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
     if let Some(second) = parts.clone().next() {
         let second_upper = second.to_uppercase();
         let compound = format!("{} {}", cmd_upper, second_upper);
-        
+
         match compound.as_str() {
-            "MODE GET" => { parts.next(); return Ok(Command::GetMode); }
-            "MODE SET" => { 
+            "MODE GET" => {
+                parts.next();
+                return Ok(Command::GetMode);
+            }
+            "MODE SET" => {
                 parts.next(); // consume "SET"
                 let mode_str = parts.next().ok_or("MODE SET requires mode argument")?;
                 let mode = DaemonMode::parse(mode_str)?;
@@ -398,7 +499,11 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 let key = parts.next().ok_or("DB PUT requires key")?.to_string();
                 let value = parts.collect::<Vec<_>>().join(" ");
                 let decoded = percent_decode(&value)?;
-                return Ok(Command::DbPut { ns, key, value: decoded });
+                return Ok(Command::DbPut {
+                    ns,
+                    key,
+                    value: decoded,
+                });
             }
             "DB GET" => {
                 parts.next();
@@ -414,54 +519,99 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             }
             "DB KEYS" => {
                 parts.next();
-                let ns = parts.next().ok_or("DB KEYS requires namespace")?.to_string();
+                let ns = parts
+                    .next()
+                    .ok_or("DB KEYS requires namespace")?
+                    .to_string();
                 return Ok(Command::DbKeys { ns });
             }
             "DB FLUSH" => {
                 parts.next();
-                let ns = parts.next().ok_or("DB FLUSH requires namespace")?.to_string();
+                let ns = parts
+                    .next()
+                    .ok_or("DB FLUSH requires namespace")?
+                    .to_string();
                 return Ok(Command::DbFlush { ns });
             }
-            "AUTH STATUS" => { parts.next(); return Ok(Command::AuthStatus); }
+            "AUTH STATUS" => {
+                parts.next();
+                return Ok(Command::AuthStatus);
+            }
             "AUTH SET" => {
                 parts.next(); // consume "SET"
                 let token = parts.collect::<Vec<_>>().join(" ");
                 let decoded = percent_decode(&token)?;
                 // Single argument = token with Bearer scheme (backward compat)
-                return Ok(Command::AuthSet { scheme: AuthScheme::Bearer, token: decoded });
+                return Ok(Command::AuthSet {
+                    scheme: AuthScheme::Bearer,
+                    token: decoded,
+                });
             }
-            "AUTH CLEAR" => { parts.next(); return Ok(Command::AuthClear); }
-            "TRACE LIST" => { parts.next(); return Ok(Command::TraceList { limit: None, filter: None }); }
+            "AUTH CLEAR" => {
+                parts.next();
+                return Ok(Command::AuthClear);
+            }
+            "TRACE LIST" => {
+                parts.next();
+                return Ok(Command::TraceList {
+                    limit: None,
+                    filter: None,
+                });
+            }
             "TRACE GET" => {
                 parts.next();
-                let id = parts.next().ok_or("TRACE GET requires trace ID")?.to_string();
+                let id = parts
+                    .next()
+                    .ok_or("TRACE GET requires trace ID")?
+                    .to_string();
                 return Ok(Command::TraceGet { id });
             }
-            "TRACE CLEAR" => { parts.next(); return Ok(Command::TraceClear); }
+            "TRACE CLEAR" => {
+                parts.next();
+                return Ok(Command::TraceClear);
+            }
             "TRACE EXPORT" => {
                 parts.next();
                 let format_str = parts.next().unwrap_or("json");
                 let format = ExportFormat::parse(format_str)?;
                 return Ok(Command::TraceExport { format });
             }
-            "METRICS LIST" => { parts.next(); return Ok(Command::MetricsList); }
+            "METRICS LIST" => {
+                parts.next();
+                return Ok(Command::MetricsList);
+            }
             "METRICS GET" => {
                 parts.next();
-                let name = parts.next().ok_or("METRICS GET requires metric name")?.to_string();
+                let name = parts
+                    .next()
+                    .ok_or("METRICS GET requires metric name")?
+                    .to_string();
                 return Ok(Command::MetricsGet { name });
             }
-            "METRICS CLEAR" => { parts.next(); return Ok(Command::MetricsClear); }
+            "METRICS CLEAR" => {
+                parts.next();
+                return Ok(Command::MetricsClear);
+            }
             "METRICS EXPORT" => {
                 parts.next();
                 let format_str = parts.next().unwrap_or("json");
                 let format = ExportFormat::parse(format_str)?;
                 return Ok(Command::MetricsExport { format });
             }
-            "SERVICES LIST" => { parts.next(); return Ok(Command::ServicesList); }
-            "ROUTES LIST" => { parts.next(); return Ok(Command::RoutesList); }
+            "SERVICES LIST" => {
+                parts.next();
+                return Ok(Command::ServicesList);
+            }
+            "ROUTES LIST" => {
+                parts.next();
+                return Ok(Command::RoutesList);
+            }
             "COMPILE FILE" => {
                 parts.next();
-                let path = parts.next().ok_or("COMPILE FILE requires path")?.to_string();
+                let path = parts
+                    .next()
+                    .ok_or("COMPILE FILE requires path")?
+                    .to_string();
                 return Ok(Command::CompileFile { path });
             }
             "PG CREATE" => {
@@ -469,7 +619,10 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 let name = parts.next().ok_or("PG CREATE requires name")?.to_string();
                 return Ok(Command::PgCreate { name });
             }
-            "PG STATUS" => { parts.next(); return Ok(Command::PgStatus); }
+            "PG STATUS" => {
+                parts.next();
+                return Ok(Command::PgStatus);
+            }
             "PG MIGRATE" => {
                 parts.next();
                 let sql = parts.collect::<Vec<_>>().join(" ");
@@ -481,8 +634,14 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 let name = parts.next().ok_or("PG DESTROY requires name")?.to_string();
                 return Ok(Command::PgDestroy { name });
             }
-            "REDIS STATUS" => { parts.next(); return Ok(Command::RedisStatus); }
-            "REDIS PING" => { parts.next(); return Ok(Command::RedisPing); }
+            "REDIS STATUS" => {
+                parts.next();
+                return Ok(Command::RedisStatus);
+            }
+            "REDIS PING" => {
+                parts.next();
+                return Ok(Command::RedisPing);
+            }
             "REDIS GET" => {
                 parts.next();
                 let key = parts.next().ok_or("REDIS GET requires key")?.to_string();
@@ -493,7 +652,10 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 let key = parts.next().ok_or("REDIS SET requires key")?.to_string();
                 let value = parts.collect::<Vec<_>>().join(" ");
                 let decoded = percent_decode(&value)?;
-                return Ok(Command::RedisSet { key, value: decoded });
+                return Ok(Command::RedisSet {
+                    key,
+                    value: decoded,
+                });
             }
             "REDIS DEL" => {
                 parts.next();
@@ -514,11 +676,15 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
                 parts.next();
                 let key = parts.next().ok_or("REDIS EXPIRE requires key")?.to_string();
                 let seconds_str = parts.next().ok_or("REDIS EXPIRE requires seconds")?;
-                let seconds = seconds_str.parse::<u64>()
+                let seconds = seconds_str
+                    .parse::<u64>()
                     .map_err(|_| format!("invalid seconds: {seconds_str}"))?;
                 return Ok(Command::RedisExpire { key, seconds });
             }
-            "REDIS FLUSH" => { parts.next(); return Ok(Command::RedisFlush); }
+            "REDIS FLUSH" => {
+                parts.next();
+                return Ok(Command::RedisFlush);
+            }
             _ => {}
         }
     }
@@ -545,7 +711,10 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         }
 
         "COMPILE-FILE" => {
-            let path = parts.next().ok_or("COMPILE-FILE requires path")?.to_string();
+            let path = parts
+                .next()
+                .ok_or("COMPILE-FILE requires path")?
+                .to_string();
             Ok(Command::CompileFile { path })
         }
 
@@ -557,7 +726,11 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             let key = parts.next().ok_or("DB-PUT requires key")?.to_string();
             let value = parts.collect::<Vec<_>>().join(" ");
             let decoded = percent_decode(&value)?;
-            Ok(Command::DbPut { ns, key, value: decoded })
+            Ok(Command::DbPut {
+                ns,
+                key,
+                value: decoded,
+            })
         }
 
         "DB-GET" => {
@@ -573,12 +746,18 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         }
 
         "DB-KEYS" => {
-            let ns = parts.next().ok_or("DB-KEYS requires namespace")?.to_string();
+            let ns = parts
+                .next()
+                .ok_or("DB-KEYS requires namespace")?
+                .to_string();
             Ok(Command::DbKeys { ns })
         }
 
         "DB-FLUSH" => {
-            let ns = parts.next().ok_or("DB-FLUSH requires namespace")?.to_string();
+            let ns = parts
+                .next()
+                .ok_or("DB-FLUSH requires namespace")?
+                .to_string();
             Ok(Command::DbFlush { ns })
         }
 
@@ -612,17 +791,25 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             let key = parts.next().ok_or("REDIS-SET requires key")?.to_string();
             let value = parts.collect::<Vec<_>>().join(" ");
             let decoded = percent_decode(&value)?;
-            Ok(Command::RedisSet { key, value: decoded })
+            Ok(Command::RedisSet {
+                key,
+                value: decoded,
+            })
         }
 
         "REDIS-SETEX" => {
             let key = parts.next().ok_or("REDIS-SETEX requires key")?.to_string();
             let seconds_str = parts.next().ok_or("REDIS-SETEX requires seconds")?;
-            let seconds = seconds_str.parse::<u64>()
+            let seconds = seconds_str
+                .parse::<u64>()
                 .map_err(|_| format!("invalid seconds: {seconds_str}"))?;
             let value = parts.collect::<Vec<_>>().join(" ");
             let decoded = percent_decode(&value)?;
-            Ok(Command::RedisSetEx { key, seconds, value: decoded })
+            Ok(Command::RedisSetEx {
+                key,
+                seconds,
+                value: decoded,
+            })
         }
 
         "REDIS-DEL" => {
@@ -643,7 +830,8 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         "REDIS-EXPIRE" => {
             let key = parts.next().ok_or("REDIS-EXPIRE requires key")?.to_string();
             let seconds_str = parts.next().ok_or("REDIS-EXPIRE requires seconds")?;
-            let seconds = seconds_str.parse::<u64>()
+            let seconds = seconds_str
+                .parse::<u64>()
                 .map_err(|_| format!("invalid seconds: {seconds_str}"))?;
             Ok(Command::RedisExpire { key, seconds })
         }
@@ -659,13 +847,19 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             if rest.is_empty() {
                 // Single arg: treat as token with Bearer scheme
                 let decoded = percent_decode(first)?;
-                Ok(Command::AuthSet { scheme: AuthScheme::Bearer, token: decoded })
+                Ok(Command::AuthSet {
+                    scheme: AuthScheme::Bearer,
+                    token: decoded,
+                })
             } else {
                 // first is scheme, rest is token
                 let scheme = AuthScheme::parse(first)?;
                 let token = rest.join(" ");
                 let decoded = percent_decode(&token)?;
-                Ok(Command::AuthSet { scheme, token: decoded })
+                Ok(Command::AuthSet {
+                    scheme,
+                    token: decoded,
+                })
             }
         }
 
@@ -673,11 +867,17 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
 
         "TRACE-LIST" => {
             // TODO: parse limit and filter from args
-            Ok(Command::TraceList { limit: None, filter: None })
+            Ok(Command::TraceList {
+                limit: None,
+                filter: None,
+            })
         }
 
         "TRACE-GET" => {
-            let id = parts.next().ok_or("TRACE-GET requires trace ID")?.to_string();
+            let id = parts
+                .next()
+                .ok_or("TRACE-GET requires trace ID")?
+                .to_string();
             Ok(Command::TraceGet { id })
         }
 
@@ -692,7 +892,10 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         "METRICS-LIST" => Ok(Command::MetricsList),
 
         "METRICS-GET" => {
-            let name = parts.next().ok_or("METRICS-GET requires metric name")?.to_string();
+            let name = parts
+                .next()
+                .ok_or("METRICS-GET requires metric name")?
+                .to_string();
             Ok(Command::MetricsGet { name })
         }
 
@@ -706,27 +909,52 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
 
         // ── Pub/Sub ───────────────────────────────────────────────────────────
         "PUBSUB-PUBLISH" => {
-            let topic   = parts.next().ok_or("PUBSUB-PUBLISH requires topic")?.to_string();
+            let topic = parts
+                .next()
+                .ok_or("PUBSUB-PUBLISH requires topic")?
+                .to_string();
             let payload = parts.collect::<Vec<_>>().join(" ");
-            let payload = if payload.is_empty() { payload } else { percent_decode(&payload)? };
+            let payload = if payload.is_empty() {
+                payload
+            } else {
+                percent_decode(&payload)?
+            };
             Ok(Command::PubSubPublish { topic, payload })
         }
         "PUBSUB-SUBSCRIBE" => {
-            let topic      = parts.next().ok_or("PUBSUB-SUBSCRIBE requires topic")?.to_string();
-            let subscriber = parts.next().ok_or("PUBSUB-SUBSCRIBE requires subscriber")?.to_string();
+            let topic = parts
+                .next()
+                .ok_or("PUBSUB-SUBSCRIBE requires topic")?
+                .to_string();
+            let subscriber = parts
+                .next()
+                .ok_or("PUBSUB-SUBSCRIBE requires subscriber")?
+                .to_string();
             Ok(Command::PubSubSubscribe { topic, subscriber })
         }
         "PUBSUB-PULL" => {
-            let topic      = parts.next().ok_or("PUBSUB-PULL requires topic")?.to_string();
-            let subscriber = parts.next().ok_or("PUBSUB-PULL requires subscriber")?.to_string();
+            let topic = parts
+                .next()
+                .ok_or("PUBSUB-PULL requires topic")?
+                .to_string();
+            let subscriber = parts
+                .next()
+                .ok_or("PUBSUB-PULL requires subscriber")?
+                .to_string();
             Ok(Command::PubSubPull { topic, subscriber })
         }
         "PUBSUB-ACK" => {
-            let msg_id = parts.next().ok_or("PUBSUB-ACK requires msg_id")?.to_string();
+            let msg_id = parts
+                .next()
+                .ok_or("PUBSUB-ACK requires msg_id")?
+                .to_string();
             Ok(Command::PubSubAck { msg_id })
         }
         "PUBSUB-NACK" => {
-            let msg_id = parts.next().ok_or("PUBSUB-NACK requires msg_id")?.to_string();
+            let msg_id = parts
+                .next()
+                .ok_or("PUBSUB-NACK requires msg_id")?
+                .to_string();
             let reason = parts.collect::<Vec<_>>().join(" ");
             Ok(Command::PubSubNack { msg_id, reason })
         }
@@ -734,7 +962,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
 
         // ── Secrets ───────────────────────────────────────────────────────────
         "SECRET-SET" => {
-            let name  = parts.next().ok_or("SECRET-SET requires name")?.to_string();
+            let name = parts.next().ok_or("SECRET-SET requires name")?.to_string();
             let value = parts.collect::<Vec<_>>().join(" ");
             let value = percent_decode(&value)?;
             Ok(Command::SecretSet { name, value })
@@ -744,7 +972,10 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             Ok(Command::SecretGet { name })
         }
         "SECRET-DELETE" => {
-            let name = parts.next().ok_or("SECRET-DELETE requires name")?.to_string();
+            let name = parts
+                .next()
+                .ok_or("SECRET-DELETE requires name")?
+                .to_string();
             Ok(Command::SecretDelete { name })
         }
         "SECRET-LIST" => Ok(Command::SecretList),
@@ -754,13 +985,13 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         }
 
         // ── Streaming ─────────────────────────────────────────────────────────
-        "STREAM-LIST"   => Ok(Command::StreamList),
+        "STREAM-LIST" => Ok(Command::StreamList),
         "STREAM-STATUS" => Ok(Command::StreamStatus),
-        "STREAM-OPEN"   => {
+        "STREAM-OPEN" => {
             let path = parts.next().ok_or("STREAM-OPEN requires path")?.to_string();
             Ok(Command::StreamOpen { path })
         }
-        "STREAM-CLOSE"  => {
+        "STREAM-CLOSE" => {
             let id = parts.next().ok_or("STREAM-CLOSE requires id")?.to_string();
             Ok(Command::StreamClose { id })
         }
@@ -835,7 +1066,7 @@ mod tests {
     #[test]
     fn parse_mode_set() {
         match parse_command("MODE-SET full").unwrap() {
-            Command::SetMode(DaemonMode::Full) => {},
+            Command::SetMode(DaemonMode::Full) => {}
             other => panic!("expected SetMode(Full), got {other:?}"),
         }
     }
@@ -848,7 +1079,7 @@ mod tests {
             Command::Compile { source } => {
                 assert!(source.contains("service"));
                 assert!(source.contains("endpoint"));
-            },
+            }
             other => panic!("expected Compile, got {other:?}"),
         }
     }

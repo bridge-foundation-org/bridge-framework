@@ -37,23 +37,23 @@ impl SseFrame {
     /// Encode SSE frame to HTTP-compatible format
     pub fn encode(&self) -> String {
         let mut output = String::new();
-        
+
         if let Some(id) = &self.id {
             output.push_str("id: ");
             output.push_str(id);
             output.push_str("\n");
         }
-        
+
         output.push_str("event: ");
         output.push_str(&self.event);
         output.push_str("\n");
-        
+
         for line in self.data.lines() {
             output.push_str("data: ");
             output.push_str(line);
             output.push_str("\n");
         }
-        
+
         output.push_str("\n");
         output
     }
@@ -86,10 +86,7 @@ pub enum StreamEvent {
         auth: String,
     },
     /// Custom event
-    Custom {
-        event_type: String,
-        payload: String,
-    },
+    Custom { event_type: String, payload: String },
 }
 
 impl StreamEvent {
@@ -215,7 +212,7 @@ impl StreamRegistry {
     }
 
     pub fn open(&self, _path: &str) -> Option<String> {
-        None  // No streaming endpoints implemented yet
+        None // No streaming endpoints implemented yet
     }
 
     pub fn set_open(&mut self, _id: &str) {
@@ -234,8 +231,6 @@ impl Default for StreamRegistry {
 }
 
 // ── Streaming Endpoint Handlers ────────────────────────────────────────────
-
-
 
 pub fn stream_traces_sse(count: usize) -> String {
     // This would be called from http.rs

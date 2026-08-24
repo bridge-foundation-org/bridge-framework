@@ -41,7 +41,9 @@ pub fn run_http_server(addr: &str, state: SharedState) -> std::io::Result<()> {
         match incoming {
             Ok(stream) => {
                 let st = Arc::clone(&state);
-                thread::spawn(move || { let _ = handle(stream, st); });
+                thread::spawn(move || {
+                    let _ = handle(stream, st);
+                });
             }
             Err(e) => eprintln!("[bridge] HTTP accept: {e}"),
         }
@@ -58,16 +60,17 @@ fn cors_origin() -> String {
 // ── Request parsing ───────────────────────────────────────────────────────────
 
 pub(crate) struct Request {
-    method:  String,
-    path:    String,
+    method: String,
+    path: String,
     headers: Vec<(String, String)>,
-    body:    String,
+    body: String,
 }
 
 impl Request {
     fn header(&self, name: &str) -> Option<&str> {
         let name_lc = name.to_lowercase();
-        self.headers.iter()
+        self.headers
+            .iter()
             .find(|(k, _)| k.to_lowercase() == name_lc)
             .map(|(_, v)| v.as_str())
     }
@@ -79,7 +82,7 @@ fn parse_request(stream: &TcpStream) -> Option<Request> {
     reader.read_line(&mut first).ok()?;
     let mut parts = first.split_whitespace();
     let method = parts.next()?.to_uppercase();
-    let path   = parts.next()?.to_string();
+    let path = parts.next()?.to_string();
 
     let mut headers = Vec::new();
     let mut content_length = 0usize;
@@ -87,7 +90,9 @@ fn parse_request(stream: &TcpStream) -> Option<Request> {
         let mut line = String::new();
         reader.read_line(&mut line).ok()?;
         let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() { break; }
+        if line.is_empty() {
+            break;
+        }
         if let Some((k, v)) = line.split_once(':') {
             let k = k.trim().to_string();
             let v = v.trim().to_string();
@@ -106,7 +111,12 @@ fn parse_request(stream: &TcpStream) -> Option<Request> {
         String::new()
     };
 
-    Some(Request { method, path, headers, body })
+    Some(Request {
+        method,
+        path,
+        headers,
+        body,
+    })
 }
 
 // ── Response helpers ──────────────────────────────────────────────────────────
@@ -117,14 +127,23 @@ fn json_response(status: u16, body: &str) -> String {
 
 fn json_response_with_id(status: u16, body: &str, req_id: &str) -> String {
     let reason = match status {
-        200 => "OK", 201 => "Created", 204 => "No Content",
-        400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
-        404 => "Not Found", 405 => "Method Not Allowed",
-        500 => "Internal Server Error", _ => "Unknown",
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        500 => "Internal Server Error",
+        _ => "Unknown",
     };
-    let origin  = cors_origin();
-    let id_hdr  = if req_id.is_empty() { String::new() }
-                  else { format!("X-Bridge-Request-Id: {req_id}\r\n") };
+    let origin = cors_origin();
+    let id_hdr = if req_id.is_empty() {
+        String::new()
+    } else {
+        format!("X-Bridge-Request-Id: {req_id}\r\n")
+    };
     format!(
         "HTTP/1.1 {status} {reason}\r\n\
          Content-Type: application/json\r\n\
@@ -141,7 +160,10 @@ fn json_response_with_id(status: u16, body: &str, req_id: &str) -> String {
 }
 
 fn text_response(status: u16, body: &str) -> String {
-    let reason = match status { 200 => "OK", _ => "Error" };
+    let reason = match status {
+        200 => "OK",
+        _ => "Error",
+    };
     let origin = cors_origin();
     format!(
         "HTTP/1.1 {status} {reason}\r\n\
@@ -184,25 +206,37 @@ fn cors_preflight() -> String {
     )
 }
 
-fn ok(body: &str)  -> String { json_response(200, body) }
-fn err(body: &str) -> String { json_response(500, body) }
-fn not_found()     -> String { json_response(404, r#"{"error":"not found"}"#) }
+fn ok(body: &str) -> String {
+    json_response(200, body)
+}
+fn err(body: &str) -> String {
+    json_response(500, body)
+}
+fn not_found() -> String {
+    json_response(404, r#"{"error":"not found"}"#)
+}
 fn bad_request(msg: &str) -> String {
     json_response(400, &format!(r#"{{"error":"{msg}"}}"#))
 }
 #[allow(dead_code)]
 fn unauthorized(msg: &str) -> String {
-    json_response(401, &format!(r#"{{"error":"unauthenticated","message":"{}"}}"#, msg))
+    json_response(
+        401,
+        &format!(r#"{{"error":"unauthenticated","message":"{}"}}"#, msg),
+    )
 }
 
 // ── Connection handler ────────────────────────────────────────────────────────
 
 fn handle(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> {
-    let start  = Instant::now();
+    let start = Instant::now();
     let req_id = next_request_id();
-    let req    = match parse_request(&stream) { Some(r) => r, None => return Ok(()) };
+    let req = match parse_request(&stream) {
+        Some(r) => r,
+        None => return Ok(()),
+    };
     let method = req.method.clone();
-    let path   = req.path.clone();
+    let path = req.path.clone();
 
     // CORS preflight — always allowed, no auth check
     if method == "OPTIONS" {
@@ -219,14 +253,21 @@ fn handle(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> {
     // route() handles auth enforcement + request-ID injection
     let response = route(&req, &state, &req_id);
 
-    let status = response.split_whitespace().nth(1)
-        .and_then(|s| s.parse::<u16>().ok()).unwrap_or(200);
+    let status = response
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(200);
     let elapsed = start.elapsed().as_millis() as u64;
 
     if let Ok(mut g) = state.lock() {
         g.push_trace(&method, &path, status, elapsed);
         g.push_log(
-            if status >= 500 { LogLevel::Error } else { LogLevel::Info },
+            if status >= 500 {
+                LogLevel::Error
+            } else {
+                LogLevel::Info
+            },
             &format!("{method} {path} {status} {elapsed}ms req_id={req_id}"),
             Default::default(),
         );
@@ -266,11 +307,15 @@ fn handle_sse(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> 
     loop {
         match rx.recv_timeout(std::time::Duration::from_secs(15)) {
             Ok(msg) => {
-                if write_chunk(&mut stream, &msg).is_err() { break; }
+                if write_chunk(&mut stream, &msg).is_err() {
+                    break;
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 // Send SSE keepalive comment
-                if write_chunk(&mut stream, ": keepalive\n\n").is_err() { break; }
+                if write_chunk(&mut stream, ": keepalive\n\n").is_err() {
+                    break;
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -311,21 +356,19 @@ fn route(req: &Request, state: &SharedState, req_id: &str) -> String {
         let mut g = state.lock().unwrap();
         match g.rate_limiter.check(&req.method, path) {
             Some(Err(retry)) => {
-                let body = format!(
-                    r#"{{"error":"rate limit exceeded","retry_after":{retry}}}"#
-                );
+                let body = format!(r#"{{"error":"rate limit exceeded","retry_after":{retry}}}"#);
                 let mut resp = json_response(429, &body);
-                resp = inject_header(resp, "Retry-After",           &retry.to_string());
+                resp = inject_header(resp, "Retry-After", &retry.to_string());
                 resp = inject_header(resp, "X-RateLimit-Remaining", "0");
                 return inject_request_id(resp, req_id);
             }
             Some(Ok((cap, rem, reset))) => {
                 // Store RL info to inject headers below
                 drop(g);
-                let inner    = route_after_rl(req, state, path, req_id);
-                let mut resp = inject_header(inner, "X-RateLimit-Limit",     &cap.to_string());
-                resp         = inject_header(resp,  "X-RateLimit-Remaining", &rem.to_string());
-                resp         = inject_header(resp,  "X-RateLimit-Reset",     &reset.to_string());
+                let inner = route_after_rl(req, state, path, req_id);
+                let mut resp = inject_header(inner, "X-RateLimit-Limit", &cap.to_string());
+                resp = inject_header(resp, "X-RateLimit-Remaining", &rem.to_string());
+                resp = inject_header(resp, "X-RateLimit-Reset", &reset.to_string());
                 return resp;
             }
             None => {} // no rule — fall through
@@ -366,7 +409,9 @@ fn route_after_rl(req: &Request, state: &SharedState, path: &str, req_id: &str) 
 
 /// Inject X-Bridge-Request-Id into any HTTP response string.
 fn inject_request_id(mut response: String, req_id: &str) -> String {
-    if req_id.is_empty() { return response; }
+    if req_id.is_empty() {
+        return response;
+    }
     let header = format!("X-Bridge-Request-Id: {req_id}\r\n");
     if let Some(pos) = response.find("Connection: close") {
         response.insert_str(pos, &header);
@@ -375,8 +420,13 @@ fn inject_request_id(mut response: String, req_id: &str) -> String {
 }
 
 /// Inject extra headers (from middleware context) into a response string.
-fn inject_extra_headers(mut response: String, headers: &std::collections::HashMap<String, String>) -> String {
-    if headers.is_empty() { return response; }
+fn inject_extra_headers(
+    mut response: String,
+    headers: &std::collections::HashMap<String, String>,
+) -> String {
+    if headers.is_empty() {
+        return response;
+    }
     let mut to_inject = String::new();
     for (k, v) in headers {
         to_inject.push_str(&format!("{k}: {v}\r\n"));
@@ -399,77 +449,77 @@ fn inject_header(mut response: String, key: &str, value: &str) -> String {
 fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
     match (req.method.as_str(), path) {
         // ── Legacy health / mode ──────────────────────────────────────────
-        ("GET",  "/health")  => health(state),
-        ("GET",  "/mode")    => get_mode(state),
-        ("POST", "/mode")    => set_mode(req, state),
+        ("GET", "/health") => health(state),
+        ("GET", "/mode") => get_mode(state),
+        ("POST", "/mode") => set_mode(req, state),
 
         // ── Legacy compile / services ─────────────────────────────────────
         ("POST", "/compile") => compile(req, state),
-        ("GET",  "/services")=> services(state),
-        ("GET",  "/routes")  => routes(state),
+        ("GET", "/services") => services(state),
+        ("GET", "/routes") => routes(state),
 
         // ── Legacy codegen ────────────────────────────────────────────────
-        ("GET",  "/codegen/latest") => codegen_latest(state),
+        ("GET", "/codegen/latest") => codegen_latest(state),
 
         // ── Legacy DB / Redis ─────────────────────────────────────────────
-        ("GET",  "/db/status")   => db_status(),
-        ("POST", "/db/create")   => db_create(req),
-        ("POST", "/db/migrate")  => db_migrate(req),
-        ("DELETE", "/db/destroy")=> db_destroy(req),
-        ("GET",  "/redis/status")=> redis_status(state),
+        ("GET", "/db/status") => db_status(),
+        ("POST", "/db/create") => db_create(req),
+        ("POST", "/db/migrate") => db_migrate(req),
+        ("DELETE", "/db/destroy") => db_destroy(req),
+        ("GET", "/redis/status") => redis_status(state),
 
         // ── v1 API ────────────────────────────────────────────────────────
-        ("GET",  "/api/v1/health")        => health(state),
-        ("GET",  "/api/v1/version")       => version(),
-        ("GET",  "/api/v1/mode")          => get_mode(state),
-        ("POST", "/api/v1/mode")          => set_mode(req, state),
-        ("POST", "/api/v1/compile")       => compile(req, state),
-        ("GET",  "/api/v1/services")      => services(state),
-        ("GET",  "/api/v1/routes")        => routes(state),
-        ("GET",  "/api/v1/codegen/latest")=> codegen_latest(state),
-        ("GET",  "/api/v1/pg/status")     => db_status(),
-        ("POST", "/api/v1/pg/create")     => db_create(req),
-        ("POST", "/api/v1/pg/migrate")    => db_migrate(req),
-        ("DELETE", "/api/v1/pg/destroy")  => db_destroy(req),
-        ("GET",  "/api/v1/redis/status")  => redis_status(state),
-        ("GET",  "/api/v1/auth/status")   => auth_status(state),
-        ("POST", "/api/v1/auth/set")      => auth_set(req, state),
-        ("DELETE", "/api/v1/auth/clear")  => auth_clear(state),
-        ("GET",  "/api/v1/traces")        => traces_list(req, state),
-        ("DELETE", "/api/v1/traces")      => traces_clear(state),
-        ("GET",  p) if p.starts_with("/api/v1/traces/") => {
+        ("GET", "/api/v1/health") => health(state),
+        ("GET", "/api/v1/version") => version(),
+        ("GET", "/api/v1/mode") => get_mode(state),
+        ("POST", "/api/v1/mode") => set_mode(req, state),
+        ("POST", "/api/v1/compile") => compile(req, state),
+        ("GET", "/api/v1/services") => services(state),
+        ("GET", "/api/v1/routes") => routes(state),
+        ("GET", "/api/v1/codegen/latest") => codegen_latest(state),
+        ("GET", "/api/v1/pg/status") => db_status(),
+        ("POST", "/api/v1/pg/create") => db_create(req),
+        ("POST", "/api/v1/pg/migrate") => db_migrate(req),
+        ("DELETE", "/api/v1/pg/destroy") => db_destroy(req),
+        ("GET", "/api/v1/redis/status") => redis_status(state),
+        ("GET", "/api/v1/auth/status") => auth_status(state),
+        ("POST", "/api/v1/auth/set") => auth_set(req, state),
+        ("DELETE", "/api/v1/auth/clear") => auth_clear(state),
+        ("GET", "/api/v1/traces") => traces_list(req, state),
+        ("DELETE", "/api/v1/traces") => traces_clear(state),
+        ("GET", p) if p.starts_with("/api/v1/traces/") => {
             let id = p.trim_start_matches("/api/v1/traces/");
             trace_get(id, state)
         }
-        ("GET",  "/api/v1/metrics")            => metrics(state),
-        ("GET",  "/api/v1/metrics/prometheus")  => metrics_prometheus(state),
-        ("DELETE", "/api/v1/metrics")          => metrics_clear(state),
-        ("GET",  "/api/v1/openapi")            => openapi(state),
-        ("POST", "/api/v1/sampling")           => set_sampling(req, state),
+        ("GET", "/api/v1/metrics") => metrics(state),
+        ("GET", "/api/v1/metrics/prometheus") => metrics_prometheus(state),
+        ("DELETE", "/api/v1/metrics") => metrics_clear(state),
+        ("GET", "/api/v1/openapi") => openapi(state),
+        ("POST", "/api/v1/sampling") => set_sampling(req, state),
 
         // ── Streaming endpoints ───────────────────────────────────────────
-        ("GET",  "/api/v1/stream/traces")      => stream_traces(state, &req),
-        ("GET",  "/api/v1/stream/metrics")     => stream_metrics(state, &req),
-        ("GET",  "/api/v1/stream/services")    => stream_services(state, &req),
+        ("GET", "/api/v1/stream/traces") => stream_traces(state, &req),
+        ("GET", "/api/v1/stream/metrics") => stream_metrics(state, &req),
+        ("GET", "/api/v1/stream/services") => stream_services(state, &req),
 
         // ── Middleware ────────────────────────────────────────────────────
-        ("GET",    "/api/v1/middleware")        => middleware_list(state),
-        ("POST",   "/api/v1/middleware")        => middleware_register(req, state),
-        ("DELETE", "/api/v1/middleware")        => middleware_remove(req, state),
+        ("GET", "/api/v1/middleware") => middleware_list(state),
+        ("POST", "/api/v1/middleware") => middleware_register(req, state),
+        ("DELETE", "/api/v1/middleware") => middleware_remove(req, state),
 
         // ── Hot reload / watcher ──────────────────────────────────────────
-        ("GET",    "/api/v1/watch")             => watch_status(state),
-        ("POST",   "/api/v1/watch/files")       => watch_add_file(req, state),
-        ("DELETE", "/api/v1/watch/files")       => watch_remove_file(req, state),
-        ("POST",   "/api/v1/watch/dirs")        => watch_add_dir(req, state),
+        ("GET", "/api/v1/watch") => watch_status(state),
+        ("POST", "/api/v1/watch/files") => watch_add_file(req, state),
+        ("DELETE", "/api/v1/watch/files") => watch_remove_file(req, state),
+        ("POST", "/api/v1/watch/dirs") => watch_add_dir(req, state),
 
         // ── Rate limiting ─────────────────────────────────────────────────
-        ("GET",    "/api/v1/ratelimit")         => ratelimit_list(state),
-        ("POST",   "/api/v1/ratelimit")         => ratelimit_add(req, state),
-        ("DELETE", "/api/v1/ratelimit")         => ratelimit_remove(req, state),
+        ("GET", "/api/v1/ratelimit") => ratelimit_list(state),
+        ("POST", "/api/v1/ratelimit") => ratelimit_add(req, state),
+        ("DELETE", "/api/v1/ratelimit") => ratelimit_remove(req, state),
 
         // ── Config ────────────────────────────────────────────────────────
-        ("GET",  "/api/v1/config")              => config_show(state),
+        ("GET", "/api/v1/config") => config_show(state),
 
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
@@ -481,9 +531,14 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
 /// Returns true for endpoints that require auth when a token is configured.
 /// Health, version, and auth-management paths are always public.
 pub fn should_enforce_auth(path: &str) -> bool {
-    !matches!(path,
-        "/health" | "/api/v1/health" | "/api/v1/version" |
-        "/api/v1/auth/status" | "/api/v1/auth/set" | "/api/v1/auth/clear"
+    !matches!(
+        path,
+        "/health"
+            | "/api/v1/health"
+            | "/api/v1/version"
+            | "/api/v1/auth/status"
+            | "/api/v1/auth/set"
+            | "/api/v1/auth/clear"
     )
 }
 
@@ -492,13 +547,25 @@ pub fn should_enforce_auth(path: &str) -> bool {
 pub(crate) fn check_auth(req: &Request, expected: &str) -> Result<(), String> {
     if let Some(hdr) = req.header("authorization") {
         let tok = hdr.strip_prefix("Bearer ").unwrap_or(hdr).trim();
-        return if tok == expected { Ok(()) } else { Err("invalid bearer token".into()) };
+        return if tok == expected {
+            Ok(())
+        } else {
+            Err("invalid bearer token".into())
+        };
     }
     if let Some(key) = req.header("x-api-key") {
-        return if key.trim() == expected { Ok(()) } else { Err("invalid API key".into()) };
+        return if key.trim() == expected {
+            Ok(())
+        } else {
+            Err("invalid API key".into())
+        };
     }
     if let Some(tok) = req.header("x-bridge-token") {
-        return if tok.trim() == expected { Ok(()) } else { Err("invalid bridge token".into()) };
+        return if tok.trim() == expected {
+            Ok(())
+        } else {
+            Err("invalid bridge token".into())
+        };
     }
     Err("authentication required".into())
 }
@@ -552,10 +619,18 @@ fn services(state: &SharedState) -> String {
     match &g.service_registry {
         None => bad_request("no services compiled yet"),
         Some(f) => {
-            let items: Vec<String> = f.services.iter().map(|s| {
-                format!(r#"{{"name":"{}","auth":"{}","endpoints":{}}}"#,
-                    s.name, s.auth.as_str(), s.endpoints.len())
-            }).collect();
+            let items: Vec<String> = f
+                .services
+                .iter()
+                .map(|s| {
+                    format!(
+                        r#"{{"name":"{}","auth":"{}","endpoints":{}}}"#,
+                        s.name,
+                        s.auth.as_str(),
+                        s.endpoints.len()
+                    )
+                })
+                .collect();
             ok(&format!("[{}]", items.join(",")))
         }
     }
@@ -571,7 +646,10 @@ fn routes(state: &SharedState) -> String {
                 for ep in &svc.endpoints {
                     items.push(format!(
                         r#"{{"service":"{}","name":"{}","method":"{}","path":"{}"}}"#,
-                        svc.name, ep.name, ep.method.as_str(), ep.path
+                        svc.name,
+                        ep.name,
+                        ep.method.as_str(),
+                        ep.path
                     ));
                 }
             }
@@ -590,41 +668,47 @@ fn codegen_latest(state: &SharedState) -> String {
 
 fn db_status() -> String {
     match sqldb::status() {
-        Ok(msg)  => ok(&msg),
+        Ok(msg) => ok(&msg),
         Err(msg) => err(&format!(r#"{{"error":"{msg}"}}"#)),
     }
 }
 
 fn db_create(req: &Request) -> String {
     let name = req.body.trim();
-    if name.is_empty() { return bad_request("name required"); }
+    if name.is_empty() {
+        return bad_request("name required");
+    }
     match sqldb::create(name) {
-        Ok(msg)  => ok(&format!(r#"{{"message":"{msg}"}}"#)),
+        Ok(msg) => ok(&format!(r#"{{"message":"{msg}"}}"#)),
         Err(msg) => err(&format!(r#"{{"error":"{msg}"}}"#)),
     }
 }
 
 fn db_migrate(req: &Request) -> String {
     let sql = req.body.trim();
-    if sql.is_empty() { return bad_request("sql required"); }
+    if sql.is_empty() {
+        return bad_request("sql required");
+    }
     match sqldb::migrate(sql) {
-        Ok(msg)  => ok(&format!(r#"{{"message":"{msg}"}}"#)),
+        Ok(msg) => ok(&format!(r#"{{"message":"{msg}"}}"#)),
         Err(msg) => err(&format!(r#"{{"error":"{msg}"}}"#)),
     }
 }
 
 fn db_destroy(req: &Request) -> String {
     let name = req.body.trim();
-    if name.is_empty() { return bad_request("name required"); }
+    if name.is_empty() {
+        return bad_request("name required");
+    }
     match sqldb::destroy(name) {
-        Ok(msg)  => ok(&format!(r#"{{"message":"{msg}"}}"#)),
+        Ok(msg) => ok(&format!(r#"{{"message":"{msg}"}}"#)),
         Err(msg) => err(&format!(r#"{{"error":"{msg}"}}"#)),
     }
 }
 
 fn redis_status(state: &SharedState) -> String {
     let g = state.lock().unwrap();
-    let addr  = g.redis_addr.clone().unwrap_or_else(|| "not running".into());
+    let addr = g.redis_addr.clone().unwrap_or_else(|| "not running".into());
     let conns = g.redis_connections_count();
     ok(&format!(r#"{{"addr":"{addr}","connections":{conns}}}"#))
 }
@@ -632,25 +716,32 @@ fn redis_status(state: &SharedState) -> String {
 fn auth_status(state: &SharedState) -> String {
     let g = state.lock().unwrap();
     let scheme = g.auth_token.as_ref().map(|_| "bearer").unwrap_or("none");
-    ok(&format!(r#"{{"configured":{},"scheme":"{}"}}"#, g.auth_token.is_some(), scheme))
+    ok(&format!(
+        r#"{{"configured":{},"scheme":"{}"}}"#,
+        g.auth_token.is_some(),
+        scheme
+    ))
 }
 
 /// Accept either plain text token or JSON body:
 /// `{"scheme":"bearer","token":"my-secret"}` or just `my-secret`
 fn auth_set(req: &Request, state: &SharedState) -> String {
     let body = req.body.trim();
-    if body.is_empty() { return bad_request("token required"); }
+    if body.is_empty() {
+        return bad_request("token required");
+    }
 
     let token = if body.starts_with('{') {
         // Parse JSON: look for "token" field
-        extract_json_field(body, "token")
-            .unwrap_or_else(|| body.to_string())
+        extract_json_field(body, "token").unwrap_or_else(|| body.to_string())
     } else {
         // Plain string token (strip surrounding quotes if present)
         body.trim_matches('"').to_string()
     };
 
-    if token.is_empty() { return bad_request("token value is empty"); }
+    if token.is_empty() {
+        return bad_request("token value is empty");
+    }
     let scheme = if body.starts_with('{') {
         extract_json_field(body, "scheme").unwrap_or_else(|| "bearer".to_string())
     } else {
@@ -658,7 +749,10 @@ fn auth_set(req: &Request, state: &SharedState) -> String {
     };
 
     state.lock().unwrap().auth_token = Some(token);
-    ok(&format!(r#"{{"message":"auth token set","scheme":"{}"}}"#, scheme))
+    ok(&format!(
+        r#"{{"message":"auth token set","scheme":"{}"}}"#,
+        scheme
+    ))
 }
 
 /// Minimal JSON field extractor for simple flat objects (no serde dependency).
@@ -684,7 +778,10 @@ fn auth_clear(state: &SharedState) -> String {
 }
 
 fn traces_list(req: &Request, state: &SharedState) -> String {
-    let limit = req.path.split('?').nth(1)
+    let limit = req
+        .path
+        .split('?')
+        .nth(1)
         .and_then(|q| q.split('&').find(|p| p.starts_with("limit=")))
         .and_then(|p| p.trim_start_matches("limit=").parse::<usize>().ok())
         .unwrap_or(usize::MAX);
@@ -702,7 +799,7 @@ fn trace_get(id: &str, state: &SharedState) -> String {
     let g = state.lock().unwrap();
     match g.find_trace(id) {
         Some(t) => ok(&t.to_json()),
-        None    => not_found(),
+        None => not_found(),
     }
 }
 
@@ -794,9 +891,11 @@ fn middleware_list(state: &SharedState) -> String {
 /// - `"header:<key>:<value>"`  — inject a response header (after hook)
 fn middleware_register(req: &Request, state: &SharedState) -> String {
     let body = req.body.trim();
-    if body.is_empty() { return bad_request("body required"); }
+    if body.is_empty() {
+        return bad_request("body required");
+    }
 
-    let name   = match extract_json_field(body, "name") {
+    let name = match extract_json_field(body, "name") {
         Some(n) if !n.is_empty() => n,
         _ => return bad_request("name is required"),
     };
@@ -806,7 +905,7 @@ fn middleware_register(req: &Request, state: &SharedState) -> String {
         Err(e) => return bad_request(&e),
     };
     let before_spec = extract_json_field(body, "before");
-    let after_spec  = extract_json_field(body, "after");
+    let after_spec = extract_json_field(body, "after");
 
     let mut builder = MiddlewareBuilder::new(&name).scope(scope);
 
@@ -814,7 +913,7 @@ fn middleware_register(req: &Request, state: &SharedState) -> String {
         if spec != "null" {
             match build_hook_before(&spec) {
                 Ok(hook) => builder = builder.before(hook),
-                Err(e)   => return bad_request(&e),
+                Err(e) => return bad_request(&e),
             }
         }
     }
@@ -822,7 +921,7 @@ fn middleware_register(req: &Request, state: &SharedState) -> String {
         if spec != "null" {
             match build_hook_after(&spec) {
                 Ok(hook) => builder = builder.after(hook),
-                Err(e)   => return bad_request(&e),
+                Err(e) => return bad_request(&e),
             }
         }
     }
@@ -831,7 +930,9 @@ fn middleware_register(req: &Request, state: &SharedState) -> String {
     // Replace if name already exists
     g.middleware.remove(&name);
     let idx = g.middleware.register(builder.build());
-    ok(&format!(r#"{{"message":"middleware registered","name":"{name}","index":{idx}}}"#))
+    ok(&format!(
+        r#"{{"message":"middleware registered","name":"{name}","index":{idx}}}"#
+    ))
 }
 
 fn middleware_remove(req: &Request, state: &SharedState) -> String {
@@ -844,9 +945,14 @@ fn middleware_remove(req: &Request, state: &SharedState) -> String {
         Some(n) if !n.is_empty() => {
             let removed = state.lock().unwrap().middleware.remove(&n);
             if removed {
-                ok(&format!(r#"{{"message":"middleware removed","name":"{n}"}}"#))
+                ok(&format!(
+                    r#"{{"message":"middleware removed","name":"{n}"}}"#
+                ))
             } else {
-                json_response(404, &format!(r#"{{"error":"middleware not found","name":"{n}"}}"#))
+                json_response(
+                    404,
+                    &format!(r#"{{"error":"middleware not found","name":"{n}"}}"#),
+                )
             }
         }
         _ => bad_request("name required"),
@@ -855,19 +961,23 @@ fn middleware_remove(req: &Request, state: &SharedState) -> String {
 
 /// Parse a scope string: "global" | "service:NAME" | "METHOD:/path"
 pub fn parse_scope(s: &str) -> Result<Scope, String> {
-    if s == "global" { return Ok(Scope::Global); }
+    if s == "global" {
+        return Ok(Scope::Global);
+    }
     if let Some(name) = s.strip_prefix("service:") {
         return Ok(Scope::Service(name.to_string()));
     }
     // Endpoint: "GET:/ping"
     if let Some(colon) = s.find(':') {
         let method = s[..colon].to_uppercase();
-        let path   = s[colon+1..].to_string();
+        let path = s[colon + 1..].to_string();
         if !method.is_empty() && !path.is_empty() {
             return Ok(Scope::Endpoint { method, path });
         }
     }
-    Err(format!("invalid scope: {s:?} — use \"global\", \"service:NAME\", or \"METHOD:/path\""))
+    Err(format!(
+        "invalid scope: {s:?} — use \"global\", \"service:NAME\", or \"METHOD:/path\""
+    ))
 }
 
 /// Build a before-hook from a spec string.
@@ -877,7 +987,8 @@ pub fn build_hook_before(spec: &str) -> Result<crate::middleware::Hook, String> 
     }
     if let Some(rest) = spec.strip_prefix("reject:") {
         let parts: Vec<&str> = rest.splitn(2, ':').collect();
-        let status: u16 = parts.first()
+        let status: u16 = parts
+            .first()
             .and_then(|s| s.parse().ok())
             .ok_or_else(|| format!("reject spec must be reject:<status>:<msg>, got {spec:?}"))?;
         let msg = parts.get(1).copied().unwrap_or("rejected").to_string();
@@ -885,7 +996,9 @@ pub fn build_hook_before(spec: &str) -> Result<crate::middleware::Hook, String> 
             ctx.reject(status, format!(r#"{{"error":"{msg}"}}"#));
         }));
     }
-    Err(format!("unknown before spec: {spec:?} — supported: \"log\", \"reject:<status>:<msg>\""))
+    Err(format!(
+        "unknown before spec: {spec:?} — supported: \"log\", \"reject:<status>:<msg>\""
+    ))
 }
 
 /// Build an after-hook from a spec string.
@@ -894,13 +1007,21 @@ pub fn build_hook_after(spec: &str) -> Result<crate::middleware::Hook, String> {
         let parts: Vec<&str> = rest.splitn(2, ':').collect();
         let key = parts.first().copied().unwrap_or("").to_string();
         let val = parts.get(1).copied().unwrap_or("").to_string();
-        if key.is_empty() { return Err(format!("header spec must be header:<key>:<value>, got {spec:?}")); }
-        return Ok(Box::new(move |ctx| ctx.set_header(key.clone(), val.clone())));
+        if key.is_empty() {
+            return Err(format!(
+                "header spec must be header:<key>:<value>, got {spec:?}"
+            ));
+        }
+        return Ok(Box::new(move |ctx| {
+            ctx.set_header(key.clone(), val.clone())
+        }));
     }
     if spec == "log" {
         return Ok(Box::new(|ctx| ctx.tag("logged-after")));
     }
-    Err(format!("unknown after spec: {spec:?} — supported: \"log\", \"header:<key>:<value>\""))
+    Err(format!(
+        "unknown after spec: {spec:?} — supported: \"log\", \"header:<key>:<value>\""
+    ))
 }
 
 // ── Watch / hot-reload handlers ───────────────────────────────────────────────
@@ -912,7 +1033,9 @@ fn watch_status(state: &SharedState) -> String {
 
 fn watch_add_file(req: &Request, state: &SharedState) -> String {
     let path = req.body.trim().trim_matches('"');
-    if path.is_empty() { return bad_request("file path required"); }
+    if path.is_empty() {
+        return bad_request("file path required");
+    }
     if !path.ends_with(".bridge") {
         return bad_request("only .bridge files can be watched");
     }
@@ -941,14 +1064,18 @@ fn watch_remove_file(req: &Request, state: &SharedState) -> String {
 
 fn watch_add_dir(req: &Request, state: &SharedState) -> String {
     let dir = req.body.trim().trim_matches('"');
-    if dir.is_empty() { return bad_request("directory path required"); }
+    if dir.is_empty() {
+        return bad_request("directory path required");
+    }
     let added = {
         let mut g = state.lock().unwrap();
         let before = g.watcher.files.len();
         g.watcher.watch_dir(dir);
         g.watcher.files.len() - before
     };
-    ok(&format!(r#"{{"message":"watching directory","dir":"{dir}","new_files":{added}}}"#))
+    ok(&format!(
+        r#"{{"message":"watching directory","dir":"{dir}","new_files":{added}}}"#
+    ))
 }
 
 // ── Rate-limit handlers ───────────────────────────────────────────────────────
@@ -970,23 +1097,28 @@ fn ratelimit_list(state: &SharedState) -> String {
 /// - `refill_rate`: tokens refilled per second
 fn ratelimit_add(req: &Request, state: &SharedState) -> String {
     let body = req.body.trim();
-    if body.is_empty() { return bad_request("body required"); }
+    if body.is_empty() {
+        return bad_request("body required");
+    }
 
-    let method   = extract_json_field(body, "method").unwrap_or_else(|| "*".to_string());
-    let path     = extract_json_field(body, "path").unwrap_or_else(|| "*".to_string());
-    let capacity: u64 = match extract_json_field(body, "capacity")
-        .and_then(|s| s.parse().ok()) {
+    let method = extract_json_field(body, "method").unwrap_or_else(|| "*".to_string());
+    let path = extract_json_field(body, "path").unwrap_or_else(|| "*".to_string());
+    let capacity: u64 = match extract_json_field(body, "capacity").and_then(|s| s.parse().ok()) {
         Some(c) if c > 0 => c,
         _ => return bad_request("capacity must be a positive integer"),
     };
-    let refill_rate: f64 = match extract_json_field(body, "refill_rate")
-        .and_then(|s| s.parse().ok()) {
-        Some(r) if r > 0.0 => r,
-        _ => return bad_request("refill_rate must be a positive number"),
-    };
+    let refill_rate: f64 =
+        match extract_json_field(body, "refill_rate").and_then(|s| s.parse().ok()) {
+            Some(r) if r > 0.0 => r,
+            _ => return bad_request("refill_rate must be a positive number"),
+        };
 
     let key = BucketKey::new(method.to_uppercase(), &path);
-    state.lock().unwrap().rate_limiter.add_rule(key, capacity, refill_rate);
+    state
+        .lock()
+        .unwrap()
+        .rate_limiter
+        .add_rule(key, capacity, refill_rate);
     ok(&format!(
         r#"{{"message":"rate limit added","method":"{method}","path":"{path}","capacity":{capacity},"refill_rate":{refill_rate}}}"#
     ))
@@ -1007,12 +1139,17 @@ fn ratelimit_remove(req: &Request, state: &SharedState) -> String {
 
     match path {
         Some(p) if !p.is_empty() => {
-            let key     = BucketKey::new(method.to_uppercase(), &p);
+            let key = BucketKey::new(method.to_uppercase(), &p);
             let removed = state.lock().unwrap().rate_limiter.remove_rule(&key);
             if removed {
-                ok(&format!(r#"{{"message":"rate limit removed","method":"{method}","path":"{p}"}}"#))
+                ok(&format!(
+                    r#"{{"message":"rate limit removed","method":"{method}","path":"{p}"}}"#
+                ))
             } else {
-                json_response(404, &format!(r#"{{"error":"rule not found","method":"{method}","path":"{p}"}}"#))
+                json_response(
+                    404,
+                    &format!(r#"{{"error":"rule not found","method":"{method}","path":"{p}"}}"#),
+                )
             }
         }
         _ => bad_request("path required"),
@@ -1024,21 +1161,29 @@ fn ratelimit_remove(req: &Request, state: &SharedState) -> String {
 /// Return a JSON summary of the current effective runtime configuration.
 fn config_show(state: &SharedState) -> String {
     let g = state.lock().unwrap();
-    let middleware_names: Vec<String> = g.middleware.names()
-        .iter().map(|n| format!("\"{n}\"")).collect();
+    let middleware_names: Vec<String> = g
+        .middleware
+        .names()
+        .iter()
+        .map(|n| format!("\"{n}\""))
+        .collect();
     let rl_count = g.rate_limiter.to_json();
-    let watch_files: Vec<String> = g.watcher.files.iter()
-        .map(|f| format!("\"{}\"", f.path)).collect();
+    let watch_files: Vec<String> = g
+        .watcher
+        .files
+        .iter()
+        .map(|f| format!("\"{}\"", f.path))
+        .collect();
     let body = format!(
         r#"{{"app":"{app}","version":"{ver}","mode":"{mode}","middleware":[{mw}],"ratelimit":{rl},"watch":{{"enabled":{we},"poll_ms":{wms},"files":[{wf}]}}}}"#,
-        app  = g.app_name,
-        ver  = g.app_version,
+        app = g.app_name,
+        ver = g.app_version,
         mode = g.mode,
-        mw   = middleware_names.join(","),
-        rl   = rl_count,
-        we   = g.watcher.running,
-        wms  = g.watcher.poll_ms,
-        wf   = watch_files.join(","),
+        mw = middleware_names.join(","),
+        rl = rl_count,
+        we = g.watcher.running,
+        wms = g.watcher.poll_ms,
+        wf = watch_files.join(","),
     );
     ok(&body)
 }
@@ -1056,15 +1201,27 @@ mod tests {
     }
 
     fn fake_req(method: &str, path: &str, body: &str) -> Request {
-        Request { method: method.to_string(), path: path.to_string(),
-                  headers: vec![], body: body.to_string() }
+        Request {
+            method: method.to_string(),
+            path: path.to_string(),
+            headers: vec![],
+            body: body.to_string(),
+        }
     }
 
-    fn fake_req_with_header(method: &str, path: &str, body: &str,
-                             hdr_name: &str, hdr_val: &str) -> Request {
-        Request { method: method.to_string(), path: path.to_string(),
-                  headers: vec![(hdr_name.to_string(), hdr_val.to_string())],
-                  body: body.to_string() }
+    fn fake_req_with_header(
+        method: &str,
+        path: &str,
+        body: &str,
+        hdr_name: &str,
+        hdr_val: &str,
+    ) -> Request {
+        Request {
+            method: method.to_string(),
+            path: path.to_string(),
+            headers: vec![(hdr_name.to_string(), hdr_val.to_string())],
+            body: body.to_string(),
+        }
     }
 
     fn r(method: &str, path: &str, body: &str) -> String {
@@ -1080,7 +1237,7 @@ mod tests {
     #[test]
     fn health_returns_ok() {
         let resp = r("GET", "/health", "");
-        assert!(resp.contains("200"),            "got: {resp}");
+        assert!(resp.contains("200"), "got: {resp}");
         assert!(resp.contains("\"status\":\"ok\""), "got: {resp}");
     }
 
@@ -1092,14 +1249,14 @@ mod tests {
     #[test]
     fn api_v1_health() {
         let resp = r("GET", "/api/v1/health", "");
-        assert!(resp.contains("200"),            "got: {resp}");
+        assert!(resp.contains("200"), "got: {resp}");
         assert!(resp.contains("\"status\":\"ok\""), "got: {resp}");
     }
 
     #[test]
     fn version_endpoint() {
         let resp = r("GET", "/api/v1/version", "");
-        assert!(resp.contains("200"),     "got: {resp}");
+        assert!(resp.contains("200"), "got: {resp}");
         assert!(resp.contains("version"), "got: {resp}");
     }
 
@@ -1144,7 +1301,7 @@ mod tests {
     #[test]
     fn cors_preflight_responds_204() {
         let resp = cors_preflight();
-        assert!(resp.contains("204"),                        "got: {resp}");
+        assert!(resp.contains("204"), "got: {resp}");
         assert!(resp.contains("Access-Control-Allow-Origin"), "got: {resp}");
     }
 
@@ -1155,8 +1312,8 @@ mod tests {
         let s = state();
         s.lock().unwrap().push_trace("GET", "/ping", 200, 5);
         let resp = rs("GET", "/api/v1/metrics", "", &s);
-        assert!(resp.contains("200"),             "got: {resp}");
-        assert!(resp.contains("total_requests"),  "got: {resp}");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("total_requests"), "got: {resp}");
     }
 
     #[test]
@@ -1164,9 +1321,9 @@ mod tests {
         let s = state();
         s.lock().unwrap().push_trace("GET", "/ping", 200, 5);
         let resp = rs("GET", "/api/v1/metrics/prometheus", "", &s);
-        assert!(resp.contains("200"),                     "got: {resp}");
-        assert!(resp.contains("bridge_requests_total"),   "got: {resp}");
-        assert!(resp.contains("text/plain"),              "got: {resp}");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("bridge_requests_total"), "got: {resp}");
+        assert!(resp.contains("text/plain"), "got: {resp}");
     }
 
     // ── Sampling ──────────────────────────────────────────────────────────
@@ -1200,9 +1357,14 @@ mod tests {
     #[test]
     fn openapi_after_compile() {
         let s = state();
-        rs("POST", "/compile", "service api\nendpoint list GET /items", &s);
+        rs(
+            "POST",
+            "/compile",
+            "service api\nendpoint list GET /items",
+            &s,
+        );
         let resp = rs("GET", "/api/v1/openapi", "", &s);
-        assert!(resp.contains("200"),    "got: {resp}");
+        assert!(resp.contains("200"), "got: {resp}");
         assert!(resp.contains("openapi"), "got: {resp}");
     }
 
@@ -1211,8 +1373,8 @@ mod tests {
     #[test]
     fn response_contains_request_id() {
         let resp = route(&fake_req("GET", "/health", ""), &state(), "req-abc123");
-        assert!(resp.contains("req-abc123"),             "got: {resp}");
-        assert!(resp.contains("X-Bridge-Request-Id"),    "got: {resp}");
+        assert!(resp.contains("req-abc123"), "got: {resp}");
+        assert!(resp.contains("X-Bridge-Request-Id"), "got: {resp}");
     }
 
     #[test]
@@ -1240,22 +1402,31 @@ mod tests {
 
     #[test]
     fn auth_valid_bearer_passes() {
-        let req = fake_req_with_header("GET", "/api/v1/metrics", "",
-                                       "Authorization", "Bearer secret-token");
+        let req = fake_req_with_header(
+            "GET",
+            "/api/v1/metrics",
+            "",
+            "Authorization",
+            "Bearer secret-token",
+        );
         assert!(check_auth(&req, "secret-token").is_ok());
     }
 
     #[test]
     fn auth_invalid_bearer_fails() {
-        let req = fake_req_with_header("GET", "/api/v1/metrics", "",
-                                       "Authorization", "Bearer wrong-token");
+        let req = fake_req_with_header(
+            "GET",
+            "/api/v1/metrics",
+            "",
+            "Authorization",
+            "Bearer wrong-token",
+        );
         assert!(check_auth(&req, "secret-token").is_err());
     }
 
     #[test]
     fn auth_x_api_key_passes() {
-        let req = fake_req_with_header("GET", "/api/v1/metrics", "",
-                                       "x-api-key", "my-key");
+        let req = fake_req_with_header("GET", "/api/v1/metrics", "", "x-api-key", "my-key");
         assert!(check_auth(&req, "my-key").is_ok());
     }
 
@@ -1278,8 +1449,12 @@ mod tests {
     #[test]
     fn auth_set_json_body() {
         let s = state();
-        let resp = rs("POST", "/api/v1/auth/set",
-                      r#"{"scheme":"bearer","token":"json-token"}"#, &s);
+        let resp = rs(
+            "POST",
+            "/api/v1/auth/set",
+            r#"{"scheme":"bearer","token":"json-token"}"#,
+            &s,
+        );
         assert!(resp.contains("200"), "got: {resp}");
         assert!(s.lock().unwrap().auth_token == Some("json-token".to_string()));
     }
@@ -1291,22 +1466,36 @@ mod tests {
         rs("POST", "/api/v1/auth/set", "gate-token", &s);
         // Request without auth → 401
         let bad = route(&fake_req("GET", "/api/v1/metrics", ""), &s, "r1");
-        assert!(bad.contains("401"), "expected 401 without token, got: {bad}");
+        assert!(
+            bad.contains("401"),
+            "expected 401 without token, got: {bad}"
+        );
         // Request with correct bearer → 200
         let good = route(
-            &fake_req_with_header("GET", "/api/v1/metrics", "",
-                                   "Authorization", "Bearer gate-token"),
-            &s, "r2",
+            &fake_req_with_header(
+                "GET",
+                "/api/v1/metrics",
+                "",
+                "Authorization",
+                "Bearer gate-token",
+            ),
+            &s,
+            "r2",
         );
-        assert!(good.contains("200"), "expected 200 with valid token, got: {good}");
+        assert!(
+            good.contains("200"),
+            "expected 200 with valid token, got: {good}"
+        );
     }
 
     // ── JSON field extractor ──────────────────────────────────────────────
 
     #[test]
     fn extract_json_field_string() {
-        assert_eq!(extract_json_field(r#"{"token":"abc"}"#, "token"),
-                   Some("abc".to_string()));
+        assert_eq!(
+            extract_json_field(r#"{"token":"abc"}"#, "token"),
+            Some("abc".to_string())
+        );
     }
 
     #[test]
@@ -1320,7 +1509,7 @@ mod tests {
     fn middleware_list_empty() {
         let resp = r("GET", "/api/v1/middleware", "");
         assert!(resp.contains("200"), "got: {resp}");
-        assert!(resp.contains("[]"),  "got: {resp}");
+        assert!(resp.contains("[]"), "got: {resp}");
     }
 
     #[test]
@@ -1328,7 +1517,7 @@ mod tests {
         let s = state();
         let body = r#"{"name":"logger","scope":"global","before":"log"}"#;
         let reg = rs("POST", "/api/v1/middleware", body, &s);
-        assert!(reg.contains("200"),    "got: {reg}");
+        assert!(reg.contains("200"), "got: {reg}");
         assert!(reg.contains("logger"), "got: {reg}");
 
         let list = rs("GET", "/api/v1/middleware", "", &s);
@@ -1359,13 +1548,25 @@ mod tests {
     #[test]
     fn middleware_remove() {
         let s = state();
-        rs("POST", "/api/v1/middleware",
-           r#"{"name":"to-remove","scope":"global","before":"log"}"#, &s);
-        let del = rs("DELETE", "/api/v1/middleware", r#"{"name":"to-remove"}"#, &s);
-        assert!(del.contains("200"),       "got: {del}");
+        rs(
+            "POST",
+            "/api/v1/middleware",
+            r#"{"name":"to-remove","scope":"global","before":"log"}"#,
+            &s,
+        );
+        let del = rs(
+            "DELETE",
+            "/api/v1/middleware",
+            r#"{"name":"to-remove"}"#,
+            &s,
+        );
+        assert!(del.contains("200"), "got: {del}");
         assert!(del.contains("to-remove"), "got: {del}");
         let list = rs("GET", "/api/v1/middleware", "", &s);
-        assert!(!list.contains("to-remove"), "still present after remove: {list}");
+        assert!(
+            !list.contains("to-remove"),
+            "still present after remove: {list}"
+        );
     }
 
     #[test]
@@ -1377,14 +1578,25 @@ mod tests {
     #[test]
     fn middleware_register_replaces_existing() {
         let s = state();
-        rs("POST", "/api/v1/middleware",
-           r#"{"name":"dup","scope":"global","before":"log"}"#, &s);
-        rs("POST", "/api/v1/middleware",
-           r#"{"name":"dup","scope":"service:api","before":"log"}"#, &s);
+        rs(
+            "POST",
+            "/api/v1/middleware",
+            r#"{"name":"dup","scope":"global","before":"log"}"#,
+            &s,
+        );
+        rs(
+            "POST",
+            "/api/v1/middleware",
+            r#"{"name":"dup","scope":"service:api","before":"log"}"#,
+            &s,
+        );
         // Should still only have one entry named "dup"
         let list = rs("GET", "/api/v1/middleware", "", &s);
-        assert_eq!(list.matches("\"name\":\"dup\"").count(), 1,
-            "expected exactly one entry, got: {list}");
+        assert_eq!(
+            list.matches("\"name\":\"dup\"").count(),
+            1,
+            "expected exactly one entry, got: {list}"
+        );
     }
 
     #[test]
@@ -1403,8 +1615,11 @@ mod tests {
         let body = r#"{"name":"tagger","scope":"global","after":"header:X-Test:hello"}"#;
         rs("POST", "/api/v1/middleware", body, &s);
         let resp = route(&fake_req("GET", "/health", ""), &s, "r1");
-        assert!(resp.contains("X-Test"), "expected X-Test header, got: {resp}");
-        assert!(resp.contains("hello"),  "got: {resp}");
+        assert!(
+            resp.contains("X-Test"),
+            "expected X-Test header, got: {resp}"
+        );
+        assert!(resp.contains("hello"), "got: {resp}");
     }
 
     #[test]
@@ -1415,8 +1630,11 @@ mod tests {
 
     #[test]
     fn middleware_register_invalid_scope() {
-        let resp = r("POST", "/api/v1/middleware",
-                     r#"{"name":"x","scope":"bad-scope"}"#);
+        let resp = r(
+            "POST",
+            "/api/v1/middleware",
+            r#"{"name":"x","scope":"bad-scope"}"#,
+        );
         assert!(resp.contains("400"), "got: {resp}");
     }
 
@@ -1427,14 +1645,22 @@ mod tests {
 
     #[test]
     fn parse_scope_service() {
-        assert_eq!(parse_scope("service:users").unwrap(),
-                   Scope::Service("users".into()));
+        assert_eq!(
+            parse_scope("service:users").unwrap(),
+            Scope::Service("users".into())
+        );
     }
 
     #[test]
     fn parse_scope_endpoint() {
         let s = parse_scope("DELETE:/items/1").unwrap();
-        assert_eq!(s, Scope::Endpoint { method: "DELETE".into(), path: "/items/1".into() });
+        assert_eq!(
+            s,
+            Scope::Endpoint {
+                method: "DELETE".into(),
+                path: "/items/1".into()
+            }
+        );
     }
 
     // ── Watch / hot-reload HTTP endpoints ─────────────────────────────────
@@ -1442,19 +1668,22 @@ mod tests {
     #[test]
     fn watch_status_empty() {
         let resp = r("GET", "/api/v1/watch", "");
-        assert!(resp.contains("200"),          "got: {resp}");
-        assert!(resp.contains("watching"),     "got: {resp}");
-        assert!(resp.contains("poll_ms"),      "got: {resp}");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("watching"), "got: {resp}");
+        assert!(resp.contains("poll_ms"), "got: {resp}");
     }
 
     #[test]
     fn watch_add_file() {
         let s = state();
         let resp = rs("POST", "/api/v1/watch/files", "/app/svc.bridge", &s);
-        assert!(resp.contains("200"),         "got: {resp}");
-        assert!(resp.contains("svc.bridge"),  "got: {resp}");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("svc.bridge"), "got: {resp}");
         let status = rs("GET", "/api/v1/watch", "", &s);
-        assert!(status.contains("svc.bridge"), "file not in status: {status}");
+        assert!(
+            status.contains("svc.bridge"),
+            "file not in status: {status}"
+        );
     }
 
     #[test]
@@ -1468,9 +1697,12 @@ mod tests {
         let s = state();
         rs("POST", "/api/v1/watch/files", "/app/a.bridge", &s);
         let del = rs("DELETE", "/api/v1/watch/files", "/app/a.bridge", &s);
-        assert!(del.contains("200"),       "got: {del}");
+        assert!(del.contains("200"), "got: {del}");
         let status = rs("GET", "/api/v1/watch", "", &s);
-        assert!(!status.contains("/app/a.bridge"), "should be removed: {status}");
+        assert!(
+            !status.contains("/app/a.bridge"),
+            "should be removed: {status}"
+        );
     }
 
     #[test]
@@ -1483,8 +1715,8 @@ mod tests {
     fn watch_add_dir_bad_path_returns_ok_with_zero_files() {
         // Non-existent dir doesn't error — just finds no files
         let resp = r("POST", "/api/v1/watch/dirs", "/no/such/directory");
-        assert!(resp.contains("200"),        "got: {resp}");
-        assert!(resp.contains("new_files"),  "got: {resp}");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("new_files"), "got: {resp}");
     }
 
     // ── Rate limiting HTTP endpoints ──────────────────────────────────────
@@ -1493,7 +1725,7 @@ mod tests {
     fn ratelimit_list_empty() {
         let resp = r("GET", "/api/v1/ratelimit", "");
         assert!(resp.contains("200"), "got: {resp}");
-        assert!(resp.contains("[]"),  "got: {resp}");
+        assert!(resp.contains("[]"), "got: {resp}");
     }
 
     #[test]
@@ -1501,42 +1733,59 @@ mod tests {
         let s = state();
         let body = r#"{"method":"GET","path":"/items","capacity":10,"refill_rate":1}"#;
         let resp = rs("POST", "/api/v1/ratelimit", body, &s);
-        assert!(resp.contains("200"),        "got: {resp}");
-        assert!(resp.contains("capacity"),   "got: {resp}");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("capacity"), "got: {resp}");
         let list = rs("GET", "/api/v1/ratelimit", "", &s);
-        assert!(list.contains("/items"),     "got: {list}");
+        assert!(list.contains("/items"), "got: {list}");
     }
 
     #[test]
     fn ratelimit_add_missing_capacity() {
-        let resp = r("POST", "/api/v1/ratelimit",
-                     r#"{"method":"GET","path":"/x","refill_rate":1}"#);
+        let resp = r(
+            "POST",
+            "/api/v1/ratelimit",
+            r#"{"method":"GET","path":"/x","refill_rate":1}"#,
+        );
         assert!(resp.contains("400"), "got: {resp}");
     }
 
     #[test]
     fn ratelimit_add_missing_refill_rate() {
-        let resp = r("POST", "/api/v1/ratelimit",
-                     r#"{"method":"GET","path":"/x","capacity":5}"#);
+        let resp = r(
+            "POST",
+            "/api/v1/ratelimit",
+            r#"{"method":"GET","path":"/x","capacity":5}"#,
+        );
         assert!(resp.contains("400"), "got: {resp}");
     }
 
     #[test]
     fn ratelimit_remove_rule() {
         let s = state();
-        rs("POST", "/api/v1/ratelimit",
-           r#"{"method":"POST","path":"/submit","capacity":5,"refill_rate":1}"#, &s);
-        let del = rs("DELETE", "/api/v1/ratelimit",
-                     r#"{"method":"POST","path":"/submit"}"#, &s);
-        assert!(del.contains("200"),    "got: {del}");
+        rs(
+            "POST",
+            "/api/v1/ratelimit",
+            r#"{"method":"POST","path":"/submit","capacity":5,"refill_rate":1}"#,
+            &s,
+        );
+        let del = rs(
+            "DELETE",
+            "/api/v1/ratelimit",
+            r#"{"method":"POST","path":"/submit"}"#,
+            &s,
+        );
+        assert!(del.contains("200"), "got: {del}");
         let list = rs("GET", "/api/v1/ratelimit", "", &s);
         assert!(!list.contains("/submit"), "rule should be removed: {list}");
     }
 
     #[test]
     fn ratelimit_remove_not_found() {
-        let resp = r("DELETE", "/api/v1/ratelimit",
-                     r#"{"method":"GET","path":"/nonexistent"}"#);
+        let resp = r(
+            "DELETE",
+            "/api/v1/ratelimit",
+            r#"{"method":"GET","path":"/nonexistent"}"#,
+        );
         assert!(resp.contains("404"), "got: {resp}");
     }
 
@@ -1544,41 +1793,66 @@ mod tests {
     fn ratelimit_enforced_returns_429() {
         let s = state();
         // Add rule with capacity 1
-        rs("POST", "/api/v1/ratelimit",
-           r#"{"method":"GET","path":"/health","capacity":1,"refill_rate":0.1}"#, &s);
+        rs(
+            "POST",
+            "/api/v1/ratelimit",
+            r#"{"method":"GET","path":"/health","capacity":1,"refill_rate":0.1}"#,
+            &s,
+        );
         // First request should pass
         let r1 = route(&fake_req("GET", "/health", ""), &s, "r1");
         assert!(r1.contains("200"), "first request should pass, got: {r1}");
         // Second request should be rate-limited
         let r2 = route(&fake_req("GET", "/health", ""), &s, "r2");
-        assert!(r2.contains("429"), "second request should be 429, got: {r2}");
+        assert!(
+            r2.contains("429"),
+            "second request should be 429, got: {r2}"
+        );
         assert!(r2.contains("rate limit exceeded"), "got: {r2}");
     }
 
     #[test]
     fn ratelimit_headers_on_passing_request() {
         let s = state();
-        rs("POST", "/api/v1/ratelimit",
-           r#"{"method":"GET","path":"/api/v1/version","capacity":100,"refill_rate":10}"#, &s);
+        rs(
+            "POST",
+            "/api/v1/ratelimit",
+            r#"{"method":"GET","path":"/api/v1/version","capacity":100,"refill_rate":10}"#,
+            &s,
+        );
         let resp = route(&fake_req("GET", "/api/v1/version", ""), &s, "r1");
-        assert!(resp.contains("X-RateLimit-Limit"),     "missing Limit header, got: {resp}");
-        assert!(resp.contains("X-RateLimit-Remaining"), "missing Remaining header, got: {resp}");
-        assert!(resp.contains("X-RateLimit-Reset"),     "missing Reset header, got: {resp}");
+        assert!(
+            resp.contains("X-RateLimit-Limit"),
+            "missing Limit header, got: {resp}"
+        );
+        assert!(
+            resp.contains("X-RateLimit-Remaining"),
+            "missing Remaining header, got: {resp}"
+        );
+        assert!(
+            resp.contains("X-RateLimit-Reset"),
+            "missing Reset header, got: {resp}"
+        );
     }
 
     #[test]
     fn ratelimit_retry_after_on_429() {
         let s = state();
-        rs("POST", "/api/v1/ratelimit",
-           r#"{"method":"POST","path":"/api/v1/compile","capacity":1,"refill_rate":0.01}"#, &s);
+        rs(
+            "POST",
+            "/api/v1/ratelimit",
+            r#"{"method":"POST","path":"/api/v1/compile","capacity":1,"refill_rate":0.01}"#,
+            &s,
+        );
         route(&fake_req("POST", "/api/v1/compile", "x"), &s, "r1"); // consume token
         let resp = route(&fake_req("POST", "/api/v1/compile", "x"), &s, "r2");
-        assert!(resp.contains("429"),         "expected 429, got: {resp}");
-        assert!(resp.contains("Retry-After"), "missing Retry-After header, got: {resp}");
+        assert!(resp.contains("429"), "expected 429, got: {resp}");
+        assert!(
+            resp.contains("Retry-After"),
+            "missing Retry-After header, got: {resp}"
+        );
     }
 }
-
-
 
 // ── Streaming Endpoints ────────────────────────────────────────────────────
 

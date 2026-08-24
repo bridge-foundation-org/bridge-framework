@@ -212,7 +212,10 @@ impl SchemaValidator {
 
     /// Validate multiple migrations
     pub fn validate_all(&self, migrations: &[MigrationStep]) -> Vec<ValidationResult> {
-        migrations.iter().map(|m| self.validate_migration(m)).collect()
+        migrations
+            .iter()
+            .map(|m| self.validate_migration(m))
+            .collect()
     }
 
     /// Get table schema
@@ -279,8 +282,7 @@ mod tests {
 
     #[test]
     fn test_table_schema_has_column() {
-        let schema = TableSchema::new("users")
-            .add_column(Column::new("id", "integer"));
+        let schema = TableSchema::new("users").add_column(Column::new("id", "integer"));
         assert!(schema.has_column("id"));
         assert!(!schema.has_column("email"));
     }
@@ -301,8 +303,8 @@ mod tests {
 
     #[test]
     fn test_migration_step_with_detail() {
-        let step = MigrationStep::new(MigrationOp::AddColumn, "users")
-            .with_detail("column", "email");
+        let step =
+            MigrationStep::new(MigrationOp::AddColumn, "users").with_detail("column", "email");
         assert_eq!(step.details.get("column"), Some(&"email".to_string()));
     }
 
@@ -346,7 +348,7 @@ mod tests {
     fn test_schema_validator_validate_create_duplicate() {
         let mut validator = SchemaValidator::new();
         validator.register_table(TableSchema::new("users"));
-        
+
         let migration = MigrationStep::new(MigrationOp::CreateTable, "users");
         let result = validator.validate_migration(&migration);
         assert_eq!(result, ValidationResult::Error);
@@ -355,12 +357,11 @@ mod tests {
     #[test]
     fn test_schema_validator_validate_add_column() {
         let mut validator = SchemaValidator::new();
-        let schema = TableSchema::new("users")
-            .add_column(Column::new("id", "integer"));
+        let schema = TableSchema::new("users").add_column(Column::new("id", "integer"));
         validator.register_table(schema);
 
-        let migration = MigrationStep::new(MigrationOp::AddColumn, "users")
-            .with_detail("column", "email");
+        let migration =
+            MigrationStep::new(MigrationOp::AddColumn, "users").with_detail("column", "email");
         let result = validator.validate_migration(&migration);
         assert_eq!(result, ValidationResult::Valid);
     }
@@ -368,12 +369,11 @@ mod tests {
     #[test]
     fn test_schema_validator_validate_add_duplicate_column() {
         let mut validator = SchemaValidator::new();
-        let schema = TableSchema::new("users")
-            .add_column(Column::new("email", "varchar"));
+        let schema = TableSchema::new("users").add_column(Column::new("email", "varchar"));
         validator.register_table(schema);
 
-        let migration = MigrationStep::new(MigrationOp::AddColumn, "users")
-            .with_detail("column", "email");
+        let migration =
+            MigrationStep::new(MigrationOp::AddColumn, "users").with_detail("column", "email");
         let result = validator.validate_migration(&migration);
         assert_eq!(result, ValidationResult::Error);
     }
@@ -381,12 +381,11 @@ mod tests {
     #[test]
     fn test_schema_validator_validate_drop_column() {
         let mut validator = SchemaValidator::new();
-        let schema = TableSchema::new("users")
-            .add_column(Column::new("email", "varchar"));
+        let schema = TableSchema::new("users").add_column(Column::new("email", "varchar"));
         validator.register_table(schema);
 
-        let migration = MigrationStep::new(MigrationOp::DropColumn, "users")
-            .with_detail("column", "email");
+        let migration =
+            MigrationStep::new(MigrationOp::DropColumn, "users").with_detail("column", "email");
         let result = validator.validate_migration(&migration);
         assert_eq!(result, ValidationResult::Valid);
     }
@@ -396,8 +395,8 @@ mod tests {
         let mut validator = SchemaValidator::new();
         validator.register_table(TableSchema::new("users"));
 
-        let migration = MigrationStep::new(MigrationOp::DropColumn, "users")
-            .with_detail("column", "email");
+        let migration =
+            MigrationStep::new(MigrationOp::DropColumn, "users").with_detail("column", "email");
         let result = validator.validate_migration(&migration);
         assert_eq!(result, ValidationResult::Error);
     }
@@ -408,8 +407,7 @@ mod tests {
         validator.register_table(TableSchema::new("users"));
 
         let migrations = vec![
-            MigrationStep::new(MigrationOp::AddColumn, "users")
-                .with_detail("column", "email"),
+            MigrationStep::new(MigrationOp::AddColumn, "users").with_detail("column", "email"),
             MigrationStep::new(MigrationOp::DropTable, "posts"),
         ];
 

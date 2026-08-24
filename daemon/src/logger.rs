@@ -17,8 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum Level {
     Trace = 0,
     Debug = 1,
-    Info  = 2,
-    Warn  = 3,
+    Info = 2,
+    Warn = 3,
     Error = 4,
 }
 
@@ -27,8 +27,8 @@ impl Level {
         match self {
             Level::Trace => "trace",
             Level::Debug => "debug",
-            Level::Info  => "info",
-            Level::Warn  => "warn",
+            Level::Info => "info",
+            Level::Warn => "warn",
             Level::Error => "error",
         }
     }
@@ -38,8 +38,8 @@ impl Level {
             "trace" => Level::Trace,
             "debug" => Level::Debug,
             "warn" | "warning" => Level::Warn,
-            "error" | "err"    => Level::Error,
-            _                  => Level::Info,
+            "error" | "err" => Level::Error,
+            _ => Level::Info,
         }
     }
 
@@ -48,8 +48,8 @@ impl Level {
         match self {
             Level::Trace => "\x1b[2m[TRACE]\x1b[0m",
             Level::Debug => "\x1b[36m[DEBUG]\x1b[0m",
-            Level::Info  => "\x1b[32m[INFO]\x1b[0m ",
-            Level::Warn  => "\x1b[33m[WARN]\x1b[0m ",
+            Level::Info => "\x1b[32m[INFO]\x1b[0m ",
+            Level::Warn => "\x1b[33m[WARN]\x1b[0m ",
             Level::Error => "\x1b[31m[ERROR]\x1b[0m",
         }
     }
@@ -65,23 +65,23 @@ impl fmt::Display for Level {
 
 #[derive(Debug, Clone)]
 pub struct Entry {
-    pub level:     Level,
-    pub message:   String,
-    pub target:    String,
+    pub level: Level,
+    pub message: String,
+    pub target: String,
     pub timestamp: u64,
-    pub trace_id:  Option<String>,
-    pub fields:    Vec<(String, String)>,
+    pub trace_id: Option<String>,
+    pub fields: Vec<(String, String)>,
 }
 
 impl Entry {
     pub fn new(level: Level, target: &str, message: impl Into<String>) -> Self {
         Entry {
             level,
-            message:   message.into(),
-            target:    target.to_string(),
+            message: message.into(),
+            target: target.to_string(),
             timestamp: now_ms(),
-            trace_id:  None,
-            fields:    Vec::new(),
+            trace_id: None,
+            fields: Vec::new(),
         }
     }
 
@@ -97,36 +97,50 @@ impl Entry {
 
     /// Render as structured JSON line.
     pub fn to_json(&self) -> String {
-        let trace = self.trace_id.as_deref()
+        let trace = self
+            .trace_id
+            .as_deref()
             .map(|id| format!(",\"trace_id\":\"{}\"", id))
             .unwrap_or_default();
 
-        let fields: String = self.fields.iter()
+        let fields: String = self
+            .fields
+            .iter()
             .map(|(k, v)| format!(",\"{}\":\"{}\"", k, v))
             .collect();
 
         format!(
             r#"{{"ts":{ts},"level":"{level}","target":"{target}","msg":"{msg}"{trace}{fields}}}"#,
-            ts     = self.timestamp,
-            level  = self.level.as_str(),
+            ts = self.timestamp,
+            level = self.level.as_str(),
             target = self.target,
-            msg    = self.message.replace('"', "\\\""),
-            trace  = trace,
+            msg = self.message.replace('"', "\\\""),
+            trace = trace,
             fields = fields,
         )
     }
 
     /// Render as human-readable colored text.
     pub fn to_text(&self, color: bool) -> String {
-        let prefix = if color { self.level.color_prefix() } else { self.level.as_str() };
-        let extra: String = self.fields.iter()
+        let prefix = if color {
+            self.level.color_prefix()
+        } else {
+            self.level.as_str()
+        };
+        let extra: String = self
+            .fields
+            .iter()
             .map(|(k, v)| format!(" {}={}", k, v))
             .collect();
-        let trace = self.trace_id.as_deref()
+        let trace = self
+            .trace_id
+            .as_deref()
             .map(|id| format!(" trace={}", id))
             .unwrap_or_default();
-        format!("{} {} {}{}{}\n",
-            prefix, self.target, self.message, trace, extra)
+        format!(
+            "{} {} {}{}{}\n",
+            prefix, self.target, self.message, trace, extra
+        )
     }
 }
 
@@ -140,8 +154,8 @@ pub struct Logger {
 struct LoggerInner {
     min_level: Level,
     json_mode: bool,
-    buffer:    Vec<Entry>,
-    max_buf:   usize,
+    buffer: Vec<Entry>,
+    max_buf: usize,
 }
 
 impl Logger {
@@ -150,7 +164,7 @@ impl Logger {
             inner: Arc::new(Mutex::new(LoggerInner {
                 min_level,
                 json_mode,
-                buffer:  Vec::with_capacity(256),
+                buffer: Vec::with_capacity(256),
                 max_buf: 1000,
             })),
         }
@@ -170,7 +184,9 @@ impl Logger {
     /// Record a log entry (buffered + printed).
     pub fn log(&self, entry: Entry) {
         let mut inner = self.inner.lock().unwrap();
-        if entry.level < inner.min_level { return; }
+        if entry.level < inner.min_level {
+            return;
+        }
 
         // Print immediately
         let line = if inner.json_mode {
@@ -212,14 +228,16 @@ impl Logger {
     pub fn recent_json(&self, limit: usize) -> String {
         let inner = self.inner.lock().unwrap();
         let entries: Vec<_> = inner.buffer.iter().rev().take(limit).collect();
-        let parts: Vec<_>   = entries.iter().rev().map(|e| e.to_json()).collect();
+        let parts: Vec<_> = entries.iter().rev().map(|e| e.to_json()).collect();
         format!("[{}]", parts.join(","))
     }
 
     /// Return recent log entries matching at or above a given level.
     pub fn recent_at_level(&self, level: Level, limit: usize) -> Vec<Entry> {
         let inner = self.inner.lock().unwrap();
-        inner.buffer.iter()
+        inner
+            .buffer
+            .iter()
             .rev()
             .filter(|e| e.level >= level)
             .take(limit)
@@ -263,8 +281,8 @@ mod tests {
     #[test]
     fn level_ordering() {
         assert!(Level::Error > Level::Warn);
-        assert!(Level::Warn  > Level::Info);
-        assert!(Level::Info  > Level::Debug);
+        assert!(Level::Warn > Level::Info);
+        assert!(Level::Info > Level::Debug);
         assert!(Level::Debug > Level::Trace);
     }
 
@@ -272,7 +290,7 @@ mod tests {
     fn level_parse() {
         assert_eq!(Level::parse("debug"), Level::Debug);
         assert_eq!(Level::parse("ERROR"), Level::Error);
-        assert_eq!(Level::parse("warn"),  Level::Warn);
+        assert_eq!(Level::parse("warn"), Level::Warn);
         assert_eq!(Level::parse("unknown"), Level::Info);
     }
 
@@ -344,7 +362,11 @@ mod tests {
             log.info("test", format!("msg {i}"));
         }
         let recent = log.recent_at_level(Level::Trace, 100);
-        assert!(recent.len() <= 5, "buffer should cap at 5, got {}", recent.len());
+        assert!(
+            recent.len() <= 5,
+            "buffer should cap at 5, got {}",
+            recent.len()
+        );
     }
 
     #[test]

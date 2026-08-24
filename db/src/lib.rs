@@ -35,7 +35,10 @@ struct Entry {
 
 impl Entry {
     fn new(value: impl Into<String>) -> Self {
-        Entry { value: value.into(), expires_at: None }
+        Entry {
+            value: value.into(),
+            expires_at: None,
+        }
     }
 
     fn with_ttl(value: impl Into<String>, ttl: Duration) -> Self {
@@ -79,7 +82,9 @@ pub struct Db {
 impl Db {
     /// Create a new, empty database.
     pub fn new() -> Self {
-        Db { inner: Arc::new(Mutex::new(HashMap::new())) }
+        Db {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Insert or update a key in the given namespace.
@@ -310,15 +315,32 @@ pub struct Transaction<'a> {
 
 #[derive(Debug)]
 enum TxOp {
-    Put { ns: String, key: String, value: String },
-    PutTtl { ns: String, key: String, value: String, ttl: Duration },
-    Del { ns: String, key: String },
-    Flush { ns: String },
+    Put {
+        ns: String,
+        key: String,
+        value: String,
+    },
+    PutTtl {
+        ns: String,
+        key: String,
+        value: String,
+        ttl: Duration,
+    },
+    Del {
+        ns: String,
+        key: String,
+    },
+    Flush {
+        ns: String,
+    },
 }
 
 impl<'a> Transaction<'a> {
     fn new(db: &'a Db) -> Self {
-        Transaction { db, ops: Vec::new() }
+        Transaction {
+            db,
+            ops: Vec::new(),
+        }
     }
 
     /// Queue a put operation.
@@ -359,9 +381,18 @@ impl<'a> Transaction<'a> {
         for op in self.ops {
             match op {
                 TxOp::Put { ns, key, value } => self.db.put(&ns, &key, value),
-                TxOp::PutTtl { ns, key, value, ttl } => self.db.put_with_ttl(&ns, &key, value, ttl),
-                TxOp::Del { ns, key } => { self.db.del(&ns, &key); },
-                TxOp::Flush { ns } => { self.db.flush_ns(&ns); },
+                TxOp::PutTtl {
+                    ns,
+                    key,
+                    value,
+                    ttl,
+                } => self.db.put_with_ttl(&ns, &key, value, ttl),
+                TxOp::Del { ns, key } => {
+                    self.db.del(&ns, &key);
+                }
+                TxOp::Flush { ns } => {
+                    self.db.flush_ns(&ns);
+                }
             }
         }
         Ok(count)

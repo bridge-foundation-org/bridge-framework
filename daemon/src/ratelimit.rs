@@ -35,13 +35,13 @@ use std::time::Instant;
 #[derive(Debug, Clone)]
 pub struct TokenBucket {
     /// Maximum token capacity (= max burst size).
-    pub capacity:     u64,
+    pub capacity: u64,
     /// Tokens added per second.
-    pub refill_rate:  f64,
+    pub refill_rate: f64,
     /// Current token count (fractional for smooth refill).
-    tokens:           f64,
+    tokens: f64,
     /// Last time tokens were refilled.
-    last_refill:      Instant,
+    last_refill: Instant,
 }
 
 impl TokenBucket {
@@ -50,7 +50,7 @@ impl TokenBucket {
         Self {
             capacity,
             refill_rate,
-            tokens:      capacity as f64,
+            tokens: capacity as f64,
             last_refill: Instant::now(),
         }
     }
@@ -90,9 +90,9 @@ impl TokenBucket {
 
     /// Lazy token refill based on elapsed time.
     fn refill(&mut self) {
-        let now     = Instant::now();
+        let now = Instant::now();
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
-        self.tokens  = (self.tokens + elapsed * self.refill_rate).min(self.capacity as f64);
+        self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.capacity as f64);
         self.last_refill = now;
     }
 }
@@ -105,12 +105,15 @@ pub struct BucketKey {
     /// HTTP method, e.g. "GET".  Use `"*"` for any method.
     pub method: String,
     /// Exact path, e.g. "/api/v1/users".  Use `"*"` for any path.
-    pub path:   String,
+    pub path: String,
 }
 
 impl BucketKey {
     pub fn new(method: impl Into<String>, path: impl Into<String>) -> Self {
-        Self { method: method.into(), path: path.into() }
+        Self {
+            method: method.into(),
+            path: path.into(),
+        }
     }
 
     /// Returns true if this key matches the given method + path.
@@ -118,7 +121,7 @@ impl BucketKey {
     #[allow(dead_code)]
     pub fn matches(&self, method: &str, path: &str) -> bool {
         let m = self.method == "*" || self.method.eq_ignore_ascii_case(method);
-        let p = self.path == "*"   || self.path == path;
+        let p = self.path == "*" || self.path == path;
         m && p
     }
 }
@@ -132,11 +135,14 @@ pub struct RateLimiter {
 }
 
 impl RateLimiter {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Register a rate-limit rule.  Replaces any existing rule for the same key.
     pub fn add_rule(&mut self, key: BucketKey, capacity: u64, refill_rate: f64) {
-        self.buckets.insert(key, TokenBucket::new(capacity, refill_rate));
+        self.buckets
+            .insert(key, TokenBucket::new(capacity, refill_rate));
     }
 
     /// Remove a rule.
@@ -170,11 +176,11 @@ impl RateLimiter {
         // Prefer exact method+path match over wildcards
         let key = self.find_best_key(method, path)?;
         let bucket = self.buckets.get_mut(&key)?;
-        let cap     = bucket.capacity;
-        let reset   = bucket.reset_at();
+        let cap = bucket.capacity;
+        let reset = bucket.reset_at();
         match bucket.try_consume() {
             Ok(remaining) => Some(Ok((cap, remaining, reset))),
-            Err(retry)    => Some(Err(retry)),
+            Err(retry) => Some(Err(retry)),
         }
     }
 
@@ -182,19 +188,27 @@ impl RateLimiter {
     fn find_best_key(&self, method: &str, path: &str) -> Option<BucketKey> {
         // 1. Exact match
         let exact = BucketKey::new(method.to_uppercase(), path);
-        if self.buckets.contains_key(&exact) { return Some(exact); }
+        if self.buckets.contains_key(&exact) {
+            return Some(exact);
+        }
 
         // 2. Any method, exact path
         let any_method = BucketKey::new("*", path);
-        if self.buckets.contains_key(&any_method) { return Some(any_method); }
+        if self.buckets.contains_key(&any_method) {
+            return Some(any_method);
+        }
 
         // 3. Exact method, any path
         let any_path = BucketKey::new(method.to_uppercase(), "*");
-        if self.buckets.contains_key(&any_path) { return Some(any_path); }
+        if self.buckets.contains_key(&any_path) {
+            return Some(any_path);
+        }
 
         // 4. Global wildcard
         let global = BucketKey::new("*", "*");
-        if self.buckets.contains_key(&global) { return Some(global); }
+        if self.buckets.contains_key(&global) {
+            return Some(global);
+        }
 
         None
     }
@@ -214,7 +228,7 @@ impl RateLimiter {
         let name = name.into();
 
         let lim_before = Arc::clone(&limiter);
-        let lim_after  = Arc::clone(&limiter);
+        let lim_after = Arc::clone(&limiter);
 
         MiddlewareBuilder::new(&name)
             .scope(Scope::Global)
@@ -229,9 +243,7 @@ impl RateLimiter {
                     Some(Err(retry)) => {
                         ctx.reject(
                             429,
-                            format!(
-                                r#"{{"error":"rate limit exceeded","retry_after":{retry}}}"#
-                            ),
+                            format!(r#"{{"error":"rate limit exceeded","retry_after":{retry}}}"#),
                         );
                         ctx.tag(format!("rl:exceeded:{retry}"));
                     }
@@ -245,9 +257,9 @@ impl RateLimiter {
                     if let Some(rest) = tag.strip_prefix("rl:ok:") {
                         let parts: Vec<&str> = rest.splitn(3, ':').collect();
                         if parts.len() == 3 {
-                            ctx.set_header("X-RateLimit-Limit",     parts[0]);
+                            ctx.set_header("X-RateLimit-Limit", parts[0]);
                             ctx.set_header("X-RateLimit-Remaining", parts[1]);
-                            ctx.set_header("X-RateLimit-Reset",     parts[2]);
+                            ctx.set_header("X-RateLimit-Reset", parts[2]);
                         }
                         let _ = &lim_after; // keep Arc alive
                         break;
@@ -296,7 +308,7 @@ mod tests {
     #[test]
     fn empty_bucket_returns_err() {
         let mut b = TokenBucket::new(1, 1.0);
-        b.try_consume().unwrap();   // drain the one token
+        b.try_consume().unwrap(); // drain the one token
         let r = b.try_consume();
         assert!(r.is_err(), "expected Err when empty");
         let retry = r.unwrap_err();
@@ -307,8 +319,10 @@ mod tests {
     fn bucket_refills_over_time() {
         // Use a very fast refill rate so we don't need to actually sleep
         let mut b = TokenBucket::new(10, 1000.0); // 1000 tokens/sec
-        // drain all
-        for _ in 0..10 { b.try_consume().unwrap(); }
+                                                  // drain all
+        for _ in 0..10 {
+            b.try_consume().unwrap();
+        }
         assert_eq!(b.remaining(), 0);
         // Sleep just 2ms — should get ~2 tokens back at 1000 tok/s
         std::thread::sleep(Duration::from_millis(2));
@@ -330,7 +344,8 @@ mod tests {
         b.try_consume().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap().as_secs();
+            .unwrap()
+            .as_secs();
         let reset = b.reset_at();
         assert!(reset >= now, "reset should be >= now");
     }
@@ -340,18 +355,18 @@ mod tests {
     #[test]
     fn exact_key_matches() {
         let k = BucketKey::new("GET", "/ping");
-        assert!(k.matches("GET",  "/ping"));
-        assert!(k.matches("get",  "/ping")); // case-insensitive method
+        assert!(k.matches("GET", "/ping"));
+        assert!(k.matches("get", "/ping")); // case-insensitive method
         assert!(!k.matches("POST", "/ping"));
-        assert!(!k.matches("GET",  "/pong"));
+        assert!(!k.matches("GET", "/pong"));
     }
 
     #[test]
     fn wildcard_method_matches_any() {
         let k = BucketKey::new("*", "/ping");
-        assert!(k.matches("GET",    "/ping"));
+        assert!(k.matches("GET", "/ping"));
         assert!(k.matches("DELETE", "/ping"));
-        assert!(!k.matches("GET",   "/other"));
+        assert!(!k.matches("GET", "/other"));
     }
 
     #[test]
@@ -365,7 +380,7 @@ mod tests {
     #[test]
     fn global_wildcard_matches_everything() {
         let k = BucketKey::new("*", "*");
-        assert!(k.matches("GET",    "/foo"));
+        assert!(k.matches("GET", "/foo"));
         assert!(k.matches("DELETE", "/bar/baz"));
     }
 
@@ -396,7 +411,8 @@ mod tests {
         assert_eq!(rem, 4);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap().as_secs();
+            .unwrap()
+            .as_secs();
         assert!(reset >= now);
     }
 
@@ -432,8 +448,8 @@ mod tests {
         let mut lim = RateLimiter::new();
         lim.add_rule(BucketKey::new("GET", "/api"), 10, 2.0);
         let j = lim.to_json();
-        assert!(j.contains("GET"),    "got: {j}");
-        assert!(j.contains("/api"),   "got: {j}");
+        assert!(j.contains("GET"), "got: {j}");
+        assert!(j.contains("/api"), "got: {j}");
         assert!(j.contains("\"capacity\":10"), "got: {j}");
     }
 
@@ -444,7 +460,9 @@ mod tests {
         use crate::middleware::{MiddlewareContext, MiddlewareRegistry};
 
         let lim = Arc::new(Mutex::new(RateLimiter::new()));
-        lim.lock().unwrap().add_rule(BucketKey::new("GET", "/ok"), 5, 1.0);
+        lim.lock()
+            .unwrap()
+            .add_rule(BucketKey::new("GET", "/ok"), 5, 1.0);
 
         let entry = RateLimiter::as_middleware(Arc::clone(&lim), "rl");
         let mut reg = MiddlewareRegistry::new();
@@ -454,9 +472,18 @@ mod tests {
         reg.run_before(&mut ctx);
         assert!(!ctx.is_rejected(), "should pass within limit");
         reg.run_after(&mut ctx);
-        assert!(ctx.extra_headers.contains_key("X-RateLimit-Limit"),     "missing limit header");
-        assert!(ctx.extra_headers.contains_key("X-RateLimit-Remaining"), "missing remaining header");
-        assert!(ctx.extra_headers.contains_key("X-RateLimit-Reset"),     "missing reset header");
+        assert!(
+            ctx.extra_headers.contains_key("X-RateLimit-Limit"),
+            "missing limit header"
+        );
+        assert!(
+            ctx.extra_headers.contains_key("X-RateLimit-Remaining"),
+            "missing remaining header"
+        );
+        assert!(
+            ctx.extra_headers.contains_key("X-RateLimit-Reset"),
+            "missing reset header"
+        );
     }
 
     #[test]
@@ -464,7 +491,9 @@ mod tests {
         use crate::middleware::{MiddlewareContext, MiddlewareRegistry};
 
         let lim = Arc::new(Mutex::new(RateLimiter::new()));
-        lim.lock().unwrap().add_rule(BucketKey::new("POST", "/submit"), 1, 0.1);
+        lim.lock()
+            .unwrap()
+            .add_rule(BucketKey::new("POST", "/submit"), 1, 0.1);
 
         let entry = RateLimiter::as_middleware(Arc::clone(&lim), "rl");
         let mut reg = MiddlewareRegistry::new();
@@ -504,7 +533,9 @@ mod tests {
         use crate::middleware::{MiddlewareContext, MiddlewareRegistry};
 
         let lim = Arc::new(Mutex::new(RateLimiter::new()));
-        lim.lock().unwrap().add_rule(BucketKey::new("*", "*"), 1, 0.5);
+        lim.lock()
+            .unwrap()
+            .add_rule(BucketKey::new("*", "*"), 1, 0.5);
 
         let entry = RateLimiter::as_middleware(Arc::clone(&lim), "rl");
         let mut reg = MiddlewareRegistry::new();
@@ -518,8 +549,16 @@ mod tests {
         reg.run_before(&mut ctx2);
         reg.run_after(&mut ctx2);
         assert!(ctx2.is_rejected());
-        assert!(ctx2.extra_headers.contains_key("Retry-After"), "missing Retry-After header");
+        assert!(
+            ctx2.extra_headers.contains_key("Retry-After"),
+            "missing Retry-After header"
+        );
         assert!(ctx2.extra_headers.contains_key("X-RateLimit-Remaining"));
-        assert_eq!(ctx2.extra_headers.get("X-RateLimit-Remaining").map(|s| s.as_str()), Some("0"));
+        assert_eq!(
+            ctx2.extra_headers
+                .get("X-RateLimit-Remaining")
+                .map(|s| s.as_str()),
+            Some("0")
+        );
     }
 }

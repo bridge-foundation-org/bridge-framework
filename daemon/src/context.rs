@@ -119,10 +119,7 @@ impl RequestContext {
     }
 
     /// Create a new context from headers (for propagation)
-    pub fn from_headers(
-        service: impl Into<String>,
-        headers: &HashMap<String, String>,
-    ) -> Self {
+    pub fn from_headers(service: impl Into<String>, headers: &HashMap<String, String>) -> Self {
         let correlation_id = headers
             .get("x-correlation-id")
             .or_else(|| headers.get("X-Correlation-ID"))
@@ -331,10 +328,7 @@ mod tests {
     #[test]
     fn test_request_context_from_headers() {
         let mut headers = HashMap::new();
-        headers.insert(
-            "X-Correlation-ID".to_string(),
-            "corr-123".to_string(),
-        );
+        headers.insert("X-Correlation-ID".to_string(), "corr-123".to_string());
         headers.insert("X-Parent-Span-ID".to_string(), "parent-456".to_string());
 
         let ctx = RequestContext::from_headers("posts", &headers);
@@ -423,10 +417,7 @@ mod tests {
 
         let retrieved = get_context();
         assert!(retrieved.is_some());
-        assert_eq!(
-            retrieved.unwrap().correlation_id(),
-            ctx.correlation_id()
-        );
+        assert_eq!(retrieved.unwrap().correlation_id(), ctx.correlation_id());
     }
 
     #[test]

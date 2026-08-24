@@ -19,9 +19,9 @@
 
 #[cfg(test)]
 mod unit {
+    use codegen::{generate_openapi, generate_typescript};
     use compiler::parse;
-    use codegen::{generate_typescript, generate_openapi};
-    use protocol::{encode, decode, parse_command, Command, DaemonMode};
+    use protocol::{decode, encode, parse_command, Command, DaemonMode};
 
     // ── Compiler → Codegen pipeline ───────────────────────────────────────────
 
@@ -31,10 +31,13 @@ mod unit {
         let file = parse(src).unwrap();
         let ts = generate_typescript(&file);
         assert!(ts.contains("createUsersClient"), "missing factory fn");
-        assert!(ts.contains("async list()"),       "missing list fn");
-        assert!(ts.contains("async get(id: string)"), "missing get fn with path param");
-        assert!(ts.contains("`/users/${id}`"),     "missing interpolated path");
-        assert!(ts.contains("BridgeError"),        "missing error class");
+        assert!(ts.contains("async list()"), "missing list fn");
+        assert!(
+            ts.contains("async get(id: string)"),
+            "missing get fn with path param"
+        );
+        assert!(ts.contains("`/users/${id}`"), "missing interpolated path");
+        assert!(ts.contains("BridgeError"), "missing error class");
     }
 
     #[test]
@@ -47,11 +50,11 @@ mod unit {
         let ts = generate_typescript(&file);
         assert!(ts.contains("createUsersClient"), "missing users factory");
         assert!(ts.contains("createPostsClient"), "missing posts factory");
-        assert!(ts.contains("createClient"),      "missing root factory");
+        assert!(ts.contains("createClient"), "missing root factory");
         // users has bearer auth → token param
-        assert!(ts.contains("token: string"),     "missing token param");
+        assert!(ts.contains("token: string"), "missing token param");
         // posts endpoint has body
-        assert!(ts.contains("body?: unknown"),    "missing body param");
+        assert!(ts.contains("body?: unknown"), "missing body param");
     }
 
     #[test]
@@ -59,8 +62,14 @@ mod unit {
         let src = "service api\nendpoint detail GET /a/:x/b/:y\n";
         let file = parse(src).unwrap();
         let ts = generate_typescript(&file);
-        assert!(ts.contains("x: string, y: string"), "missing multi param signature");
-        assert!(ts.contains("`/a/${x}/b/${y}`"),     "missing multi param interpolation");
+        assert!(
+            ts.contains("x: string, y: string"),
+            "missing multi param signature"
+        );
+        assert!(
+            ts.contains("`/a/${x}/b/${y}`"),
+            "missing multi param interpolation"
+        );
     }
 
     #[test]
@@ -68,9 +77,18 @@ mod unit {
         let src = "service shop\nendpoint get GET /products/:id\n";
         let file = parse(src).unwrap();
         let spec = generate_openapi(&file);
-        assert!(spec.contains("{id}"),    "OA path params should use {{id}} not :id");
-        assert!(spec.contains("\"path\""), "path param should have 'in: path'");
-        assert!(!spec.contains(":id"),    "colon-style params should not appear in OA spec");
+        assert!(
+            spec.contains("{id}"),
+            "OA path params should use {{id}} not :id"
+        );
+        assert!(
+            spec.contains("\"path\""),
+            "path param should have 'in: path'"
+        );
+        assert!(
+            !spec.contains(":id"),
+            "colon-style params should not appear in OA spec"
+        );
     }
 
     #[test]
@@ -78,8 +96,14 @@ mod unit {
         let src = "service secure\nauth bearer\nendpoint get GET /data\n";
         let file = parse(src).unwrap();
         let spec = generate_openapi(&file);
-        assert!(spec.contains("bearerAuth"),       "missing bearerAuth security scheme");
-        assert!(spec.contains("securitySchemes"),  "missing securitySchemes block");
+        assert!(
+            spec.contains("bearerAuth"),
+            "missing bearerAuth security scheme"
+        );
+        assert!(
+            spec.contains("securitySchemes"),
+            "missing securitySchemes block"
+        );
     }
 
     #[test]
@@ -87,7 +111,10 @@ mod unit {
         let src = "service api\nendpoint create POST /items\n";
         let file = parse(src).unwrap();
         let spec = generate_openapi(&file);
-        assert!(spec.contains("requestBody"), "POST should include requestBody");
+        assert!(
+            spec.contains("requestBody"),
+            "POST should include requestBody"
+        );
     }
 
     #[test]
@@ -95,7 +122,10 @@ mod unit {
         let src = "service api\nendpoint list GET /items\n";
         let file = parse(src).unwrap();
         let spec = generate_openapi(&file);
-        assert!(!spec.contains("requestBody"), "GET should not have requestBody");
+        assert!(
+            !spec.contains("requestBody"),
+            "GET should not have requestBody"
+        );
     }
 
     // ── Protocol encode / decode ──────────────────────────────────────────────
@@ -257,7 +287,7 @@ mod unit {
 
     #[test]
     fn miniredis_resp_parse_bulk() {
-        use miniredis::{Resp, parse_resp};
+        use miniredis::{parse_resp, Resp};
         use std::io::BufReader;
         let data = b"$5\r\nhello\r\n";
         let mut reader = BufReader::new(&data[..]);
@@ -267,18 +297,14 @@ mod unit {
 
     #[test]
     fn miniredis_resp_parse_array() {
-        use miniredis::{Resp, parse_resp};
+        use miniredis::{parse_resp, Resp};
         use std::io::BufReader;
         let data = b"*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n";
         let mut reader = BufReader::new(&data[..]);
         let r = parse_resp(&mut reader).unwrap();
-        assert_eq!(r, Resp::Array(vec![
-            Resp::bulk("GET"),
-            Resp::bulk("foo"),
-        ]));
+        assert_eq!(r, Resp::Array(vec![Resp::bulk("GET"), Resp::bulk("foo"),]));
     }
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Daemon integration tests (require a running daemon — #[ignore] by default)
@@ -293,15 +319,18 @@ mod daemon_tests {
     use std::thread;
     use std::time::Duration;
 
-    const TCP_ADDR:   &str = "127.0.0.1:17878";
-    const HTTP_ADDR:  &str = "127.0.0.1:18787";
+    const TCP_ADDR: &str = "127.0.0.1:17878";
+    const HTTP_ADDR: &str = "127.0.0.1:18787";
     const REDIS_ADDR: &str = "127.0.0.1:16399";
 
     // ── Daemon lifecycle ──────────────────────────────────────────────────────
 
     struct DaemonGuard(std::process::Child);
     impl Drop for DaemonGuard {
-        fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
     }
 
     static DAEMON: OnceLock<Mutex<Option<DaemonGuard>>> = OnceLock::new();
@@ -309,24 +338,31 @@ mod daemon_tests {
     fn ensure_daemon() -> bool {
         let cell = DAEMON.get_or_init(|| Mutex::new(None));
         let mut guard = cell.lock().unwrap();
-        if guard.is_some() { return true; }
-        if TcpStream::connect(TCP_ADDR).is_ok() { return true; }
+        if guard.is_some() {
+            return true;
+        }
+        if TcpStream::connect(TCP_ADDR).is_ok() {
+            return true;
+        }
 
         let child = match Command::new("cargo")
             .args(["run", "-p", "daemon"])
             .envs([
-                ("BRIDGE_TCP_ADDR",   TCP_ADDR),
-                ("BRIDGE_HTTP_ADDR",  HTTP_ADDR),
+                ("BRIDGE_TCP_ADDR", TCP_ADDR),
+                ("BRIDGE_HTTP_ADDR", HTTP_ADDR),
                 ("BRIDGE_REDIS_ADDR", REDIS_ADDR),
             ])
-            .stdout(Stdio::null()).stderr(Stdio::null())
-            .spawn() { Ok(c) => c, Err(_) => return false };
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
 
         for _ in 0..50 {
             thread::sleep(Duration::from_millis(200));
-            if TcpStream::connect(TCP_ADDR).is_ok()
-                && TcpStream::connect(HTTP_ADDR).is_ok()
-            {
+            if TcpStream::connect(TCP_ADDR).is_ok() && TcpStream::connect(HTTP_ADDR).is_ok() {
                 *guard = Some(DaemonGuard(child));
                 thread::sleep(Duration::from_millis(500));
                 return true;
@@ -368,7 +404,9 @@ mod daemon_tests {
         stream.shutdown(Shutdown::Write).ok();
         let mut resp = String::new();
         stream.read_to_string(&mut resp).expect("read http");
-        let status = resp.lines().next()
+        let status = resp
+            .lines()
+            .next()
             .and_then(|l| l.split_whitespace().nth(1))
             .and_then(|s| s.parse().ok())
             .unwrap_or(0u16);
@@ -389,31 +427,38 @@ mod daemon_tests {
     }
 
     fn docker_available() -> bool {
-        Command::new("docker").arg("version").output()
-            .map(|o| o.status.success()).unwrap_or(false)
+        Command::new("docker")
+            .arg("version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     // ── TCP: core protocol ────────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_ping() {
         assert!(ensure_daemon());
         assert_eq!(tcp_cmd("PING"), "PONG");
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_version() {
         assert!(ensure_daemon());
         assert!(tcp_cmd("VERSION").starts_with("DATA "));
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_health() {
         assert!(ensure_daemon());
         assert!(tcp_cmd("HEALTH").starts_with("DATA "));
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_help() {
         assert!(ensure_daemon());
         assert!(tcp_cmd("HELP").starts_with("DATA "));
@@ -421,7 +466,8 @@ mod daemon_tests {
 
     // ── TCP: compile & routes ─────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_compile_basic() {
         assert!(ensure_daemon());
         let src = protocol::encode("service hello\nendpoint ping GET /ping\n");
@@ -429,20 +475,28 @@ mod daemon_tests {
         assert!(r.starts_with("DATA "), "got: {r}");
         // TypeScript client should be in the response
         let decoded = protocol::decode(r.strip_prefix("DATA ").unwrap_or("")).unwrap_or_default();
-        assert!(decoded.contains("createHelloClient") || decoded.contains("hello"), "got: {decoded}");
+        assert!(
+            decoded.contains("createHelloClient") || decoded.contains("hello"),
+            "got: {decoded}"
+        );
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_compile_with_path_params() {
         assert!(ensure_daemon());
         let src = protocol::encode("service users\nendpoint get GET /users/:id\n");
         let r = tcp_cmd(&format!("COMPILE {src}"));
         assert!(r.starts_with("DATA "), "got: {r}");
         let decoded = protocol::decode(r.strip_prefix("DATA ").unwrap_or("")).unwrap_or_default();
-        assert!(decoded.contains("id: string") || decoded.contains("users"), "got: {decoded}");
+        assert!(
+            decoded.contains("id: string") || decoded.contains("users"),
+            "got: {decoded}"
+        );
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_services_after_compile() {
         assert!(ensure_daemon());
         let src = protocol::encode("service myapp\nendpoint ping GET /ping\n");
@@ -451,7 +505,8 @@ mod daemon_tests {
         assert!(r.starts_with("DATA "), "got: {r}");
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_routes_after_compile() {
         assert!(ensure_daemon());
         let r = tcp_cmd("ROUTES LIST");
@@ -460,7 +515,8 @@ mod daemon_tests {
 
     // ── TCP: mode ─────────────────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_mode_get_set_roundtrip() {
         assert!(ensure_daemon());
         let orig = tcp_cmd("MODE GET");
@@ -478,7 +534,8 @@ mod daemon_tests {
 
     // ── TCP: key-value store ──────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_db_put_get_del() {
         assert!(ensure_daemon());
         let key = "e2e_kv_test";
@@ -489,7 +546,8 @@ mod daemon_tests {
         assert!(tcp_cmd(&format!("DB GET e2e {key}")).starts_with("ERR "));
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_db_keys_and_flush() {
         assert!(ensure_daemon());
         tcp_cmd("DB PUT e2e_flush k1 v1");
@@ -498,31 +556,45 @@ mod daemon_tests {
         assert!(r.starts_with("DATA "), "got: {r}");
         assert!(tcp_cmd("DB FLUSH e2e_flush").starts_with("OK "));
         let after = tcp_cmd("DB GET e2e_flush k1");
-        assert!(after.starts_with("ERR "), "expected ERR after flush, got: {after}");
+        assert!(
+            after.starts_with("ERR "),
+            "expected ERR after flush, got: {after}"
+        );
     }
 
     // ── TCP: auth ─────────────────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_auth_bearer_lifecycle() {
         assert!(ensure_daemon());
         tcp_cmd("AUTH CLEAR"); // clean slate
         let status = tcp_cmd("AUTH STATUS");
         assert!(status.starts_with("DATA "), "got: {status}");
-        assert!(!status.contains("\"configured\":true"), "should start unconfigured");
+        assert!(
+            !status.contains("\"configured\":true"),
+            "should start unconfigured"
+        );
 
         assert!(tcp_cmd("AUTH SET bearer my-secret-token-123").starts_with("OK "));
         let configured = tcp_cmd("AUTH STATUS");
-        assert!(configured.contains("true"), "expected configured=true, got: {configured}");
+        assert!(
+            configured.contains("true"),
+            "expected configured=true, got: {configured}"
+        );
 
         tcp_cmd("AUTH CLEAR");
         let cleared = tcp_cmd("AUTH STATUS");
-        assert!(!cleared.contains("\"configured\":true"), "should be cleared");
+        assert!(
+            !cleared.contains("\"configured\":true"),
+            "should be cleared"
+        );
     }
 
     // ── TCP: traces ───────────────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_tcp_trace_list_and_clear() {
         assert!(ensure_daemon());
         // Generate a trace via HTTP
@@ -534,29 +606,38 @@ mod daemon_tests {
         assert!(tcp_cmd("TRACE CLEAR").starts_with("OK "));
         // After clear, list should be empty array
         let after = tcp_cmd("TRACE LIST");
-        let decoded = protocol::decode(after.strip_prefix("DATA ").unwrap_or("")).unwrap_or_default();
-        assert!(decoded.contains("[]") || decoded == "[]", "expected empty, got: {decoded}");
+        let decoded =
+            protocol::decode(after.strip_prefix("DATA ").unwrap_or("")).unwrap_or_default();
+        assert!(
+            decoded.contains("[]") || decoded == "[]",
+            "expected empty, got: {decoded}"
+        );
     }
 
     // ── HTTP: core endpoints ──────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_health_has_status_field() {
         assert!(ensure_daemon());
         let (status, body) = http("GET", "/health", "");
         assert_eq!(status, 200, "body: {body}");
-        assert!(body.contains("ok") || body.contains("status") || body.contains("version"),
-            "body should contain status info, got: {body}");
+        assert!(
+            body.contains("ok") || body.contains("status") || body.contains("version"),
+            "body should contain status info, got: {body}"
+        );
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_v1_health() {
         assert!(ensure_daemon());
         let (status, _) = http("GET", "/api/v1/health", "");
         assert_eq!(status, 200);
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_version() {
         assert!(ensure_daemon());
         let (status, body) = http("GET", "/api/v1/version", "");
@@ -564,7 +645,8 @@ mod daemon_tests {
         assert!(body.contains("version"), "body: {body}");
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_mode_get() {
         assert!(ensure_daemon());
         let (status, body) = http("GET", "/mode", "");
@@ -572,7 +654,8 @@ mod daemon_tests {
         assert!(body.contains("mode"), "body: {body}");
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_mode_set() {
         assert!(ensure_daemon());
         let (s, b) = http("POST", "/mode", "\"lite\"");
@@ -580,40 +663,50 @@ mod daemon_tests {
         http("POST", "/mode", "\"full\""); // restore
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_not_found() {
         assert!(ensure_daemon());
         let (status, _) = http("GET", "/no-such-path", "");
         assert_eq!(status, 404);
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_cors_preflight() {
         assert!(ensure_daemon());
         let (status, _) = http("OPTIONS", "/health", "");
-        assert!(status == 200 || status == 204, "OPTIONS should succeed, got: {status}");
+        assert!(
+            status == 200 || status == 204,
+            "OPTIONS should succeed, got: {status}"
+        );
     }
 
     // ── HTTP: compile ─────────────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_compile_returns_typescript() {
         assert!(ensure_daemon());
         let src = "service test\nendpoint ping GET /ping\n";
         let (status, body) = http("POST", "/compile", src);
         assert_eq!(status, 200, "body: {body}");
-        assert!(body.contains("createTestClient") || body.contains("BridgeError"),
-            "body: {body}");
+        assert!(
+            body.contains("createTestClient") || body.contains("BridgeError"),
+            "body: {body}"
+        );
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_services_list() {
         assert!(ensure_daemon());
         let (status, _) = http("GET", "/services", "");
         assert_eq!(status, 200);
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_routes_list() {
         assert!(ensure_daemon());
         let (status, _) = http("GET", "/routes", "");
@@ -622,7 +715,8 @@ mod daemon_tests {
 
     // ── HTTP: traces & metrics ────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_traces_after_request() {
         assert!(ensure_daemon());
         // Clear first
@@ -633,18 +727,22 @@ mod daemon_tests {
         let (status, body) = http("GET", "/api/v1/traces", "");
         assert_eq!(status, 200, "body: {body}");
         // Should have at least one trace
-        assert!(body.contains("GET") || body.contains("traces") || body.len() > 5,
-            "expected some trace data, got: {body}");
+        assert!(
+            body.contains("GET") || body.contains("traces") || body.len() > 5,
+            "expected some trace data, got: {body}"
+        );
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_metrics() {
         assert!(ensure_daemon());
         let (status, body) = http("GET", "/api/v1/metrics", "");
         assert_eq!(status, 200, "body: {body}");
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_openapi() {
         assert!(ensure_daemon());
         // Compile something first so there's a spec
@@ -656,12 +754,16 @@ mod daemon_tests {
 
     // ── HTTP: auth ────────────────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_auth_set_and_clear() {
         assert!(ensure_daemon());
         http("DELETE", "/api/v1/auth/clear", "");
-        let (s, _) = http("POST", "/api/v1/auth/set",
-            r#"{"scheme":"bearer","token":"test-token"}"#);
+        let (s, _) = http(
+            "POST",
+            "/api/v1/auth/set",
+            r#"{"scheme":"bearer","token":"test-token"}"#,
+        );
         assert_eq!(s, 200);
         let (s, body) = http("GET", "/api/v1/auth/status", "");
         assert_eq!(s, 200, "body: {body}");
@@ -670,18 +772,22 @@ mod daemon_tests {
 
     // ── HTTP: Redis status ────────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_redis_status() {
         assert!(ensure_daemon());
         let (status, body) = http("GET", "/redis/status", "");
         assert_eq!(status, 200, "body: {body}");
-        assert!(body.contains("addr") || body.contains("connection") || body.contains("status"),
-            "body: {body}");
+        assert!(
+            body.contains("addr") || body.contains("connection") || body.contains("status"),
+            "body: {body}"
+        );
     }
 
     // ── HTTP: database ────────────────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_http_db_status() {
         assert!(ensure_daemon());
         let (status, _) = http("GET", "/db/status", "");
@@ -690,7 +796,8 @@ mod daemon_tests {
 
     // ── MiniRedis: string commands ────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_redis_ping() {
         assert!(ensure_daemon());
         thread::sleep(Duration::from_millis(300));
@@ -701,7 +808,8 @@ mod daemon_tests {
         assert_eq!(redis_line(&mut w, &mut r, b"*1\r\n$4\r\nPING\r\n"), "+PONG");
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_redis_set_get_del() {
         assert!(ensure_daemon());
         thread::sleep(Duration::from_millis(200));
@@ -710,14 +818,31 @@ mod daemon_tests {
         let mut r = BufReader::new(stream.try_clone().unwrap());
         let mut w = stream;
 
-        assert_eq!(redis_line(&mut w, &mut r, b"*3\r\n$3\r\nSET\r\n$6\r\ne2ekey\r\n$5\r\nhello\r\n"), "+OK");
-        assert_eq!(redis_line(&mut w, &mut r, b"*2\r\n$3\r\nGET\r\n$6\r\ne2ekey\r\n"), "$5");
+        assert_eq!(
+            redis_line(
+                &mut w,
+                &mut r,
+                b"*3\r\n$3\r\nSET\r\n$6\r\ne2ekey\r\n$5\r\nhello\r\n"
+            ),
+            "+OK"
+        );
+        assert_eq!(
+            redis_line(&mut w, &mut r, b"*2\r\n$3\r\nGET\r\n$6\r\ne2ekey\r\n"),
+            "$5"
+        );
         assert_eq!(redis_line(&mut w, &mut r, b""), "hello");
-        assert_eq!(redis_line(&mut w, &mut r, b"*2\r\n$3\r\nDEL\r\n$6\r\ne2ekey\r\n"), ":1");
-        assert_eq!(redis_line(&mut w, &mut r, b"*2\r\n$3\r\nGET\r\n$6\r\ne2ekey\r\n"), "$-1");
+        assert_eq!(
+            redis_line(&mut w, &mut r, b"*2\r\n$3\r\nDEL\r\n$6\r\ne2ekey\r\n"),
+            ":1"
+        );
+        assert_eq!(
+            redis_line(&mut w, &mut r, b"*2\r\n$3\r\nGET\r\n$6\r\ne2ekey\r\n"),
+            "$-1"
+        );
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_redis_incr_decr() {
         assert!(ensure_daemon());
         thread::sleep(Duration::from_millis(100));
@@ -726,14 +851,24 @@ mod daemon_tests {
         let mut r = BufReader::new(stream.try_clone().unwrap());
         let mut w = stream;
 
-        assert_eq!(redis_line(&mut w, &mut r, b"*2\r\n$4\r\nINCR\r\n$7\r\ne2ecntr\r\n"), ":1");
-        assert_eq!(redis_line(&mut w, &mut r, b"*2\r\n$4\r\nINCR\r\n$7\r\ne2ecntr\r\n"), ":2");
-        assert_eq!(redis_line(&mut w, &mut r, b"*2\r\n$4\r\nDECR\r\n$7\r\ne2ecntr\r\n"), ":1");
+        assert_eq!(
+            redis_line(&mut w, &mut r, b"*2\r\n$4\r\nINCR\r\n$7\r\ne2ecntr\r\n"),
+            ":1"
+        );
+        assert_eq!(
+            redis_line(&mut w, &mut r, b"*2\r\n$4\r\nINCR\r\n$7\r\ne2ecntr\r\n"),
+            ":2"
+        );
+        assert_eq!(
+            redis_line(&mut w, &mut r, b"*2\r\n$4\r\nDECR\r\n$7\r\ne2ecntr\r\n"),
+            ":1"
+        );
         // cleanup
         redis_line(&mut w, &mut r, b"*2\r\n$3\r\nDEL\r\n$7\r\ne2ecntr\r\n");
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_redis_expire_ttl() {
         assert!(ensure_daemon());
         thread::sleep(Duration::from_millis(100));
@@ -742,15 +877,27 @@ mod daemon_tests {
         let mut r = BufReader::new(stream.try_clone().unwrap());
         let mut w = stream;
 
-        redis_line(&mut w, &mut r, b"*3\r\n$3\r\nSET\r\n$6\r\ne2ettl\r\n$3\r\nval\r\n");
-        assert_eq!(redis_line(&mut w, &mut r, b"*3\r\n$6\r\nEXPIRE\r\n$6\r\ne2ettl\r\n$2\r\n60\r\n"), ":1");
+        redis_line(
+            &mut w,
+            &mut r,
+            b"*3\r\n$3\r\nSET\r\n$6\r\ne2ettl\r\n$3\r\nval\r\n",
+        );
+        assert_eq!(
+            redis_line(
+                &mut w,
+                &mut r,
+                b"*3\r\n$6\r\nEXPIRE\r\n$6\r\ne2ettl\r\n$2\r\n60\r\n"
+            ),
+            ":1"
+        );
         let ttl = redis_line(&mut w, &mut r, b"*2\r\n$3\r\nTTL\r\n$6\r\ne2ettl\r\n");
         let n: i64 = ttl[1..].parse().unwrap_or(-99);
         assert!(n > 0 && n <= 60, "TTL should be 1-60, got: {n}");
         redis_line(&mut w, &mut r, b"*2\r\n$3\r\nDEL\r\n$6\r\ne2ettl\r\n");
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_redis_mset_mget() {
         assert!(ensure_daemon());
         thread::sleep(Duration::from_millis(100));
@@ -765,12 +912,20 @@ mod daemon_tests {
         // MGET k1 k2
         let mget = b"*3\r\n$4\r\nMGET\r\n$2\r\nm1\r\n$2\r\nm2\r\n";
         let arr_hdr = redis_line(&mut w, &mut r, mget);
-        assert_eq!(arr_hdr, "*2", "expected 2-element array header, got: {arr_hdr}");
+        assert_eq!(
+            arr_hdr, "*2",
+            "expected 2-element array header, got: {arr_hdr}"
+        );
         // cleanup
-        redis_line(&mut w, &mut r, b"*3\r\n$3\r\nDEL\r\n$2\r\nm1\r\n$2\r\nm2\r\n");
+        redis_line(
+            &mut w,
+            &mut r,
+            b"*3\r\n$3\r\nDEL\r\n$2\r\nm1\r\n$2\r\nm2\r\n",
+        );
     }
 
-    #[test] #[ignore = "requires running daemon"]
+    #[test]
+    #[ignore = "requires running daemon"]
     fn e2e_redis_list_operations() {
         assert!(ensure_daemon());
         thread::sleep(Duration::from_millis(100));
@@ -784,17 +939,24 @@ mod daemon_tests {
         let len = redis_line(&mut w, &mut r, push);
         assert_eq!(len, ":3", "expected 3 elements, got: {len}");
         // LLEN
-        assert_eq!(redis_line(&mut w, &mut r, b"*2\r\n$4\r\nLLEN\r\n$6\r\ne2list\r\n"), ":3");
+        assert_eq!(
+            redis_line(&mut w, &mut r, b"*2\r\n$4\r\nLLEN\r\n$6\r\ne2list\r\n"),
+            ":3"
+        );
         // cleanup
         redis_line(&mut w, &mut r, b"*2\r\n$3\r\nDEL\r\n$6\r\ne2list\r\n");
     }
 
     // ── Docker Postgres (optional) ────────────────────────────────────────────
 
-    #[test] #[ignore = "requires running daemon and Docker"]
+    #[test]
+    #[ignore = "requires running daemon and Docker"]
     fn e2e_docker_postgres_lifecycle() {
         assert!(ensure_daemon());
-        if !docker_available() { eprintln!("SKIP: Docker not available"); return; }
+        if !docker_available() {
+            eprintln!("SKIP: Docker not available");
+            return;
+        }
 
         let (s, b) = http("POST", "/db/create", "e2e_pg_test");
         eprintln!("db create: {s} {b}");

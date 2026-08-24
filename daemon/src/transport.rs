@@ -386,7 +386,9 @@ mod tests {
 
     #[test]
     fn test_http_request_query() {
-        let req = HttpRequest::get("/users").query("page", "1").query("limit", "10");
+        let req = HttpRequest::get("/users")
+            .query("page", "1")
+            .query("limit", "10");
         assert_eq!(req.query.len(), 2);
     }
 

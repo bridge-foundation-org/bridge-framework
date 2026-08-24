@@ -78,7 +78,7 @@ impl ClusterNode {
 #[derive(Clone, Debug)]
 pub struct ClusterTopology {
     nodes: HashMap<String, ClusterNode>,
-    slot_map: HashMap<u16, String>, // slot -> node_id
+    slot_map: HashMap<u16, String>,         // slot -> node_id
     replicas: HashMap<String, Vec<String>>, // master_id -> replica_ids
 }
 
@@ -105,7 +105,7 @@ impl ClusterTopology {
         if !self.nodes.contains_key(node_id) {
             return Err(format!("Node {} not found", node_id));
         }
-        
+
         // Remove slot mappings
         let slots_to_remove: Vec<_> = self
             .slot_map
@@ -113,7 +113,7 @@ impl ClusterTopology {
             .filter(|(_, id)| *id == node_id)
             .map(|(&slot, _)| slot)
             .collect();
-        
+
         for slot in slots_to_remove {
             self.slot_map.remove(&slot);
         }
@@ -135,7 +135,9 @@ impl ClusterTopology {
 
     /// Assign slots to node
     pub fn assign_slots(&mut self, node_id: &str, slots: Vec<u16>) -> Result<(), String> {
-        let node = self.nodes.get_mut(node_id)
+        let node = self
+            .nodes
+            .get_mut(node_id)
             .ok_or_else(|| format!("Node {} not found", node_id))?;
 
         for slot in slots {
@@ -346,7 +348,7 @@ mod tests {
         let mut topology = ClusterTopology::new();
         let node1 = ClusterNode::new("node1", "localhost", 6379);
         let node2 = ClusterNode::new("node1", "localhost", 6380);
-        
+
         topology.add_node(node1).unwrap();
         let result = topology.add_node(node2);
         assert!(result.is_err());
@@ -357,7 +359,7 @@ mod tests {
         let mut topology = ClusterTopology::new();
         let node = ClusterNode::new("node1", "localhost", 6379);
         topology.add_node(node).unwrap();
-        
+
         let result = topology.remove_node("node1");
         assert!(result.is_ok());
         assert_eq!(topology.list_nodes().len(), 0);
@@ -368,7 +370,7 @@ mod tests {
         let mut topology = ClusterTopology::new();
         let node = ClusterNode::new("node1", "localhost", 6379);
         topology.add_node(node).unwrap();
-        
+
         let retrieved = topology.get_node("node1");
         assert!(retrieved.is_some());
     }
@@ -378,10 +380,10 @@ mod tests {
         let mut topology = ClusterTopology::new();
         let node = ClusterNode::new("node1", "localhost", 6379);
         topology.add_node(node).unwrap();
-        
+
         let result = topology.assign_slots("node1", vec![0, 100, 200]);
         assert!(result.is_ok());
-        
+
         let retrieved = topology.get_node("node1").unwrap();
         assert!(retrieved.owns_slot(100));
     }
@@ -392,7 +394,7 @@ mod tests {
         let node = ClusterNode::new("node1", "localhost", 6379);
         topology.add_node(node).unwrap();
         topology.assign_slots("node1", vec![100]).unwrap();
-        
+
         let node_for_slot = topology.get_node_for_slot(100);
         assert!(node_for_slot.is_some());
         assert_eq!(node_for_slot.unwrap().id, "node1");
@@ -403,10 +405,10 @@ mod tests {
         let mut topology = ClusterTopology::new();
         let master = ClusterNode::new("master", "localhost", 6379);
         let replica = ClusterNode::new("replica", "localhost", 6380).as_replica();
-        
+
         topology.add_node(master).unwrap();
         topology.add_node(replica).unwrap();
-        
+
         let result = topology.add_replica("master", "replica");
         assert!(result.is_ok());
     }
@@ -417,14 +419,14 @@ mod tests {
         let master = ClusterNode::new("master", "localhost", 6379);
         let replica1 = ClusterNode::new("replica1", "localhost", 6380).as_replica();
         let replica2 = ClusterNode::new("replica2", "localhost", 6381).as_replica();
-        
+
         topology.add_node(master).unwrap();
         topology.add_node(replica1).unwrap();
         topology.add_node(replica2).unwrap();
-        
+
         topology.add_replica("master", "replica1").unwrap();
         topology.add_replica("master", "replica2").unwrap();
-        
+
         let replicas = topology.get_replicas("master");
         assert_eq!(replicas.len(), 2);
     }
@@ -449,7 +451,7 @@ mod tests {
         let node = ClusterNode::new("node1", "localhost", 6379);
         topology.add_node(node).unwrap();
         topology.assign_slots("node1", vec![0, 100]).unwrap();
-        
+
         let info = ClusterInfo::new(&topology);
         assert_eq!(info.state, ClusterState::Partial);
         assert_eq!(info.slots_assigned, 2);

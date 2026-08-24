@@ -346,7 +346,10 @@ impl ConfigSchema {
 
         for (i, field) in self.fields.iter().enumerate() {
             schema.push_str(&format!("    \"{}\": {{\n", field.name));
-            schema.push_str(&format!("      \"type\": \"{}\",\n", field.field_type.type_name()));
+            schema.push_str(&format!(
+                "      \"type\": \"{}\",\n",
+                field.field_type.type_name()
+            ));
 
             if let Some(desc) = &field.description {
                 schema.push_str(&format!("      \"description\": \"{}\",\n", desc));
@@ -412,15 +415,16 @@ mod tests {
 
     #[test]
     fn test_config_constraint_length() {
-        let c = ConfigConstraint::new().with_min_length(5).with_max_length(50);
+        let c = ConfigConstraint::new()
+            .with_min_length(5)
+            .with_max_length(50);
         assert_eq!(c.min_length, Some(5));
         assert_eq!(c.max_length, Some(50));
     }
 
     #[test]
     fn test_config_constraint_enum() {
-        let c =
-            ConfigConstraint::new().with_enum(vec!["dev".into(), "prod".into(), "test".into()]);
+        let c = ConfigConstraint::new().with_enum(vec!["dev".into(), "prod".into(), "test".into()]);
         assert_eq!(c.enum_values.as_ref().unwrap().len(), 3);
     }
 
@@ -445,8 +449,8 @@ mod tests {
 
     #[test]
     fn test_config_field_with_description() {
-        let field = ConfigField::new("port", ConfigType::Integer)
-            .with_description("Server port number");
+        let field =
+            ConfigField::new("port", ConfigType::Integer).with_description("Server port number");
         assert_eq!(field.description, Some("Server port number".to_string()));
     }
 
@@ -469,8 +473,8 @@ mod tests {
 
     #[test]
     fn test_config_schema_get_field() {
-        let schema = ConfigSchema::new("app", "1.0.0")
-            .field(ConfigField::new("port", ConfigType::Integer));
+        let schema =
+            ConfigSchema::new("app", "1.0.0").field(ConfigField::new("port", ConfigType::Integer));
 
         let field = schema.get_field("port");
         assert!(field.is_some());
@@ -485,8 +489,8 @@ mod tests {
 
     #[test]
     fn test_config_schema_validate_required_field() {
-        let schema = ConfigSchema::new("app", "1.0.0")
-            .field(ConfigField::new("port", ConfigType::Integer));
+        let schema =
+            ConfigSchema::new("app", "1.0.0").field(ConfigField::new("port", ConfigType::Integer));
 
         let mut values = HashMap::new();
         let result = schema.validate(&values);
@@ -520,8 +524,8 @@ mod tests {
 
     #[test]
     fn test_config_schema_validate_integer() {
-        let schema = ConfigSchema::new("app", "1.0.0")
-            .field(ConfigField::new("port", ConfigType::Integer));
+        let schema =
+            ConfigSchema::new("app", "1.0.0").field(ConfigField::new("port", ConfigType::Integer));
 
         let mut values = HashMap::new();
         values.insert("port".to_string(), "not_a_number".to_string());
@@ -547,8 +551,11 @@ mod tests {
     #[test]
     fn test_config_schema_validate_string_length() {
         let schema = ConfigSchema::new("app", "1.0.0").field(
-            ConfigField::new("name", ConfigType::String)
-                .with_constraints(ConfigConstraint::new().with_min_length(3).with_max_length(20)),
+            ConfigField::new("name", ConfigType::String).with_constraints(
+                ConfigConstraint::new()
+                    .with_min_length(3)
+                    .with_max_length(20),
+            ),
         );
 
         let mut values = HashMap::new();
@@ -561,11 +568,9 @@ mod tests {
     #[test]
     fn test_config_schema_validate_enum() {
         let schema = ConfigSchema::new("app", "1.0.0").field(
-            ConfigField::new("env", ConfigType::String)
-                .with_constraints(
-                    ConfigConstraint::new()
-                        .with_enum(vec!["dev".into(), "prod".into(), "test".into()]),
-                ),
+            ConfigField::new("env", ConfigType::String).with_constraints(
+                ConfigConstraint::new().with_enum(vec!["dev".into(), "prod".into(), "test".into()]),
+            ),
         );
 
         let mut values = HashMap::new();
@@ -581,8 +586,8 @@ mod tests {
 
     #[test]
     fn test_config_schema_validate_boolean() {
-        let schema = ConfigSchema::new("app", "1.0.0")
-            .field(ConfigField::new("debug", ConfigType::Boolean));
+        let schema =
+            ConfigSchema::new("app", "1.0.0").field(ConfigField::new("debug", ConfigType::Boolean));
 
         let mut values = HashMap::new();
         values.insert("debug".to_string(), "yes".to_string());

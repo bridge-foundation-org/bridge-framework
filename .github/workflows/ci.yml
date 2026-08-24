@@ -1,0 +1,30 @@
+# CI for bridge-framework: fmt + test are merge-blocking; clippy is advisory
+# until the existing warning backlog (238 as of 2026-08-24) is paid down,
+# then it flips to -D warnings. Tracked in docs/TASKS.md phase-0.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format (blocking)
+        run: cargo fmt --check
+      # Advisory: no -D warnings yet (backlog: 238 as of 2026-08-24); compile
+      # errors still fail the job because cargo exits non-zero on them.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+      - name: Tests (blocking)
+        run: cargo test --workspace

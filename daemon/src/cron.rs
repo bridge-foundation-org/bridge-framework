@@ -96,10 +96,7 @@ impl CronExpression {
             let step = parts[1].parse::<u32>().map_err(|_| "Invalid step")?;
             Ok(CronField::Step(step, max))
         } else if field.contains(',') {
-            let values: Result<Vec<u32>, _> = field
-                .split(',')
-                .map(|v| v.parse::<u32>())
-                .collect();
+            let values: Result<Vec<u32>, _> = field.split(',').map(|v| v.parse::<u32>()).collect();
             Ok(CronField::List(values.map_err(|_| "Invalid list")?))
         } else {
             Err(format!("Invalid cron field: {}", field))
@@ -184,12 +181,17 @@ impl Scheduler {
     }
 
     /// Get jobs due at a specific time
-    pub fn jobs_due(&self, minute: u32, hour: u32, day: u32, month: u32, weekday: u32) -> Vec<&Job> {
+    pub fn jobs_due(
+        &self,
+        minute: u32,
+        hour: u32,
+        day: u32,
+        month: u32,
+        weekday: u32,
+    ) -> Vec<&Job> {
         self.jobs
             .values()
-            .filter(|j| {
-                j.enabled && j.schedule.matches(minute, hour, day, month, weekday)
-            })
+            .filter(|j| j.enabled && j.schedule.matches(minute, hour, day, month, weekday))
             .collect()
     }
 }

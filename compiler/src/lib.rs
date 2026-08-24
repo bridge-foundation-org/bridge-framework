@@ -46,26 +46,26 @@ pub enum Method {
 impl Method {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Method::Get     => "GET",
-            Method::Post    => "POST",
-            Method::Put     => "PUT",
-            Method::Patch   => "PATCH",
-            Method::Delete  => "DELETE",
-            Method::Head    => "HEAD",
+            Method::Get => "GET",
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Patch => "PATCH",
+            Method::Delete => "DELETE",
+            Method::Head => "HEAD",
             Method::Options => "OPTIONS",
         }
     }
 
     fn parse(s: &str) -> Result<Self, String> {
         match s.to_ascii_uppercase().as_str() {
-            "GET"     => Ok(Method::Get),
-            "POST"    => Ok(Method::Post),
-            "PUT"     => Ok(Method::Put),
-            "PATCH"   => Ok(Method::Patch),
-            "DELETE"  => Ok(Method::Delete),
-            "HEAD"    => Ok(Method::Head),
+            "GET" => Ok(Method::Get),
+            "POST" => Ok(Method::Post),
+            "PUT" => Ok(Method::Put),
+            "PATCH" => Ok(Method::Patch),
+            "DELETE" => Ok(Method::Delete),
+            "HEAD" => Ok(Method::Head),
             "OPTIONS" => Ok(Method::Options),
-            other     => Err(format!("unknown HTTP method: {other}")),
+            other => Err(format!("unknown HTTP method: {other}")),
         }
     }
 }
@@ -82,15 +82,17 @@ pub enum Auth {
 impl Auth {
     fn parse(s: &str) -> Result<Self, String> {
         match s.to_ascii_lowercase().as_str() {
-            "none"    => Ok(Auth::None),
-            "bearer"  => Ok(Auth::Bearer),
+            "none" => Ok(Auth::None),
+            "bearer" => Ok(Auth::Bearer),
             "api_key" | "apikey" => Ok(Auth::ApiKey),
-            other => Err(format!("unknown auth scheme: {other} (use: none|bearer|api_key)")),
+            other => Err(format!(
+                "unknown auth scheme: {other} (use: none|bearer|api_key)"
+            )),
         }
     }
     pub fn as_str(&self) -> &'static str {
         match self {
-            Auth::None   => "none",
+            Auth::None => "none",
             Auth::Bearer => "bearer",
             Auth::ApiKey => "api_key",
         }
@@ -151,14 +153,23 @@ impl BridgeFile {
     /// Return a new `BridgeFile` containing only endpoints that have the given tag.
     /// Services with no matching endpoints are omitted entirely.
     pub fn filter_by_tag(&self, tag: &str) -> Self {
-        let services = self.services.iter()
+        let services = self
+            .services
+            .iter()
             .filter_map(|svc| {
-                let eps: Vec<Endpoint> = svc.endpoints.iter()
+                let eps: Vec<Endpoint> = svc
+                    .endpoints
+                    .iter()
                     .filter(|ep| ep.tags.iter().any(|t| t == tag))
                     .cloned()
                     .collect();
-                if eps.is_empty() { None } else {
-                    Some(Service { endpoints: eps, ..svc.clone() })
+                if eps.is_empty() {
+                    None
+                } else {
+                    Some(Service {
+                        endpoints: eps,
+                        ..svc.clone()
+                    })
                 }
             })
             .collect();
@@ -175,7 +186,9 @@ impl BridgeFile {
         let mut tags: std::collections::HashSet<String> = std::collections::HashSet::new();
         for svc in &self.services {
             for ep in &svc.endpoints {
-                for t in &ep.tags { tags.insert(t.clone()); }
+                for t in &ep.tags {
+                    tags.insert(t.clone());
+                }
             }
         }
         let mut v: Vec<String> = tags.into_iter().collect();
@@ -257,7 +270,10 @@ impl ParseError {
     pub fn display(&self, filename: &str) -> String {
         let mut out = format!("error[{}]: {}\n", self.code, self.message);
         if self.column > 0 {
-            out.push_str(&format!("  --> {}:{}:{}\n", filename, self.line, self.column));
+            out.push_str(&format!(
+                "  --> {}:{}:{}\n",
+                filename, self.line, self.column
+            ));
         } else {
             out.push_str(&format!("  --> {}:{}\n", filename, self.line));
         }
@@ -277,7 +293,11 @@ impl ParseError {
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "error[{}] line {}: {}", self.code, self.line, self.message)
+        write!(
+            f,
+            "error[{}] line {}: {}",
+            self.code, self.line, self.message
+        )
     }
 }
 
@@ -330,36 +350,34 @@ pub fn parse_with_errors(source: &str) -> Result<BridgeFile, Vec<ParseError>> {
                 }
             }
 
-            "auth" => {
-                match tokens.next() {
-                    None => errors.push(ParseError::new(
+            "auth" => match tokens.next() {
+                None => errors.push(ParseError::new(
+                    "E0005",
+                    lineno,
+                    "'auth' requires a scheme",
+                    raw.trim(),
+                    Some("valid schemes: none | bearer | api_key"),
+                )),
+                Some(s) => match Auth::parse(s) {
+                    Err(msg) => errors.push(ParseError::new(
                         "E0005",
                         lineno,
-                        "'auth' requires a scheme",
+                        msg,
                         raw.trim(),
                         Some("valid schemes: none | bearer | api_key"),
                     )),
-                    Some(s) => match Auth::parse(s) {
-                        Err(msg) => errors.push(ParseError::new(
-                            "E0005",
+                    Ok(auth) => match &mut current {
+                        Some(svc) => svc.auth = auth,
+                        None => errors.push(ParseError::new(
+                            "E0008",
                             lineno,
-                            msg,
+                            "'auth' must appear inside a service block",
                             raw.trim(),
-                            Some("valid schemes: none | bearer | api_key"),
+                            Some("add a 'service <name>' line before this"),
                         )),
-                        Ok(auth) => match &mut current {
-                            Some(svc) => svc.auth = auth,
-                            None => errors.push(ParseError::new(
-                                "E0008",
-                                lineno,
-                                "'auth' must appear inside a service block",
-                                raw.trim(),
-                                Some("add a 'service <name>' line before this"),
-                            )),
-                        },
                     },
-                }
-            }
+                },
+            },
 
             "middleware" => {
                 let names: Vec<String> = tokens.map(str::to_string).collect();
@@ -391,66 +409,67 @@ pub fn parse_with_errors(source: &str) -> Result<BridgeFile, Vec<ParseError>> {
                 let path = method_str.and_then(|_| tokens.next());
 
                 match (name, method_str, path) {
-                    (Some(name), Some(method_str), Some(path)) => {
-                        match Method::parse(method_str) {
-                            Err(_) => errors.push(ParseError::new(
-                                "E0001",
-                                lineno,
-                                format!("unknown HTTP method '{method_str}'"),
-                                raw.trim(),
-                                Some("valid methods: GET POST PUT PATCH DELETE HEAD OPTIONS"),
-                            )),
-                            Ok(method) => {
-                                if !path.starts_with('/') {
-                                    errors.push(ParseError::new_hint(
-                                        "E0002",
-                                        lineno,
-                                        format!("path must start with '/' (got '{path}')"),
-                                        raw.trim(),
-                                        format!("change to '/{path}'"),
-                                    ));
-                                }
-                                let mut ep_auth: Option<Auth> = None;
-                                let mut tags: Vec<String> = Vec::new();
-                                for qual in tokens {
-                                    if let Some(scheme) = qual.strip_prefix("auth=") {
-                                        match Auth::parse(scheme) {
-                                            Ok(a) => ep_auth = Some(a),
-                                            Err(msg) => errors.push(ParseError::new(
-                                                "E0005",
-                                                lineno,
-                                                msg,
-                                                raw.trim(),
-                                                Some("valid schemes: none | bearer | api_key"),
-                                            )),
-                                        }
-                                    } else if let Some(tag_list) = qual.strip_prefix("tags=") {
-                                        tags.extend(tag_list.split(',').map(str::to_string));
+                    (Some(name), Some(method_str), Some(path)) => match Method::parse(method_str) {
+                        Err(_) => errors.push(ParseError::new(
+                            "E0001",
+                            lineno,
+                            format!("unknown HTTP method '{method_str}'"),
+                            raw.trim(),
+                            Some("valid methods: GET POST PUT PATCH DELETE HEAD OPTIONS"),
+                        )),
+                        Ok(method) => {
+                            if !path.starts_with('/') {
+                                errors.push(ParseError::new_hint(
+                                    "E0002",
+                                    lineno,
+                                    format!("path must start with '/' (got '{path}')"),
+                                    raw.trim(),
+                                    format!("change to '/{path}'"),
+                                ));
+                            }
+                            let mut ep_auth: Option<Auth> = None;
+                            let mut tags: Vec<String> = Vec::new();
+                            for qual in tokens {
+                                if let Some(scheme) = qual.strip_prefix("auth=") {
+                                    match Auth::parse(scheme) {
+                                        Ok(a) => ep_auth = Some(a),
+                                        Err(msg) => errors.push(ParseError::new(
+                                            "E0005",
+                                            lineno,
+                                            msg,
+                                            raw.trim(),
+                                            Some("valid schemes: none | bearer | api_key"),
+                                        )),
                                     }
-                                }
-                                match &mut current {
-                                    Some(svc) => svc.endpoints.push(Endpoint {
-                                        name: name.to_string(),
-                                        method,
-                                        path: path.to_string(),
-                                        auth: ep_auth,
-                                        tags,
-                                    }),
-                                    None => errors.push(ParseError::new(
-                                        "E0007",
-                                        lineno,
-                                        "'endpoint' must appear inside a service block",
-                                        raw.trim(),
-                                        Some("add a 'service <name>' line before this"),
-                                    )),
+                                } else if let Some(tag_list) = qual.strip_prefix("tags=") {
+                                    tags.extend(tag_list.split(',').map(str::to_string));
                                 }
                             }
+                            match &mut current {
+                                Some(svc) => svc.endpoints.push(Endpoint {
+                                    name: name.to_string(),
+                                    method,
+                                    path: path.to_string(),
+                                    auth: ep_auth,
+                                    tags,
+                                }),
+                                None => errors.push(ParseError::new(
+                                    "E0007",
+                                    lineno,
+                                    "'endpoint' must appear inside a service block",
+                                    raw.trim(),
+                                    Some("add a 'service <name>' line before this"),
+                                )),
+                            }
                         }
-                    }
+                    },
                     _ => errors.push(ParseError::new(
                         "E0001",
                         lineno,
-                        format!("endpoint '{}' is missing method and/or path", name.unwrap_or("?")),
+                        format!(
+                            "endpoint '{}' is missing method and/or path",
+                            name.unwrap_or("?")
+                        ),
                         raw.trim(),
                         Some("write: endpoint <name> <METHOD> <path>"),
                     )),
@@ -492,7 +511,10 @@ pub fn parse_with_errors(source: &str) -> Result<BridgeFile, Vec<ParseError>> {
             errors.push(ParseError::new(
                 "E0003",
                 0,
-                format!("duplicate service name '{}' (first defined at line {})", svc.name, prev),
+                format!(
+                    "duplicate service name '{}' (first defined at line {})",
+                    svc.name, prev
+                ),
                 "",
                 None,
             ));
@@ -501,7 +523,11 @@ pub fn parse_with_errors(source: &str) -> Result<BridgeFile, Vec<ParseError>> {
         }
     }
 
-    if errors.is_empty() { Ok(file) } else { Err(errors) }
+    if errors.is_empty() {
+        Ok(file)
+    } else {
+        Err(errors)
+    }
 }
 
 /// Helper to check a completed service block for internal errors.
@@ -510,7 +536,10 @@ fn check_service(svc: &Service, _lineno: usize, _raw: &str) -> Result<(), ParseE
         return Err(ParseError::new_hint(
             "E0009",
             0,
-            format!("service '{}' has no endpoints — add at least one 'endpoint' line", svc.name),
+            format!(
+                "service '{}' has no endpoints — add at least one 'endpoint' line",
+                svc.name
+            ),
             "",
             format!("add: endpoint <name> GET /{}", svc.name),
         ));
@@ -521,7 +550,10 @@ fn check_service(svc: &Service, _lineno: usize, _raw: &str) -> Result<(), ParseE
             return Err(ParseError::new(
                 "E0004",
                 0,
-                format!("service '{}': duplicate endpoint name '{}'", svc.name, ep.name),
+                format!(
+                    "service '{}': duplicate endpoint name '{}'",
+                    svc.name, ep.name
+                ),
                 "",
                 None,
             ));
@@ -568,7 +600,8 @@ pub fn parse(source: &str) -> Result<BridgeFile, String> {
                     validate_service(&svc, lineno)?;
                     file.services.push(svc);
                 }
-                let name = tokens.next()
+                let name = tokens
+                    .next()
                     .ok_or_else(|| format!("line {}: 'service' requires a name", lineno + 1))?;
                 validate_ident(name, lineno)?;
                 current = Some(Service {
@@ -580,40 +613,62 @@ pub fn parse(source: &str) -> Result<BridgeFile, String> {
             }
 
             "auth" => {
-                let scheme = tokens.next()
-                    .ok_or_else(|| format!("line {}: 'auth' requires a scheme (none|bearer|api_key)", lineno + 1))?;
-                let auth = Auth::parse(scheme)
-                    .map_err(|e| format!("line {}: {e}", lineno + 1))?;
+                let scheme = tokens.next().ok_or_else(|| {
+                    format!(
+                        "line {}: 'auth' requires a scheme (none|bearer|api_key)",
+                        lineno + 1
+                    )
+                })?;
+                let auth = Auth::parse(scheme).map_err(|e| format!("line {}: {e}", lineno + 1))?;
                 match &mut current {
                     Some(svc) => svc.auth = auth,
-                    None => return Err(format!("line {}: 'auth' must appear inside a service block", lineno + 1)),
+                    None => {
+                        return Err(format!(
+                            "line {}: 'auth' must appear inside a service block",
+                            lineno + 1
+                        ))
+                    }
                 }
             }
 
             "middleware" => {
                 let names: Vec<String> = tokens.map(str::to_string).collect();
                 if names.is_empty() {
-                    return Err(format!("line {}: 'middleware' requires at least one name", lineno + 1));
+                    return Err(format!(
+                        "line {}: 'middleware' requires at least one name",
+                        lineno + 1
+                    ));
                 }
                 match &mut current {
                     Some(svc) => svc.middleware.extend(names),
-                    None => return Err(format!("line {}: 'middleware' must appear inside a service block", lineno + 1)),
+                    None => {
+                        return Err(format!(
+                            "line {}: 'middleware' must appear inside a service block",
+                            lineno + 1
+                        ))
+                    }
                 }
             }
 
             "endpoint" => {
-                let name = tokens.next()
+                let name = tokens
+                    .next()
                     .ok_or_else(|| format!("line {}: 'endpoint' requires a name", lineno + 1))?;
-                let method_str = tokens.next()
-                    .ok_or_else(|| format!("line {}: endpoint '{name}' missing HTTP method", lineno + 1))?;
-                let path = tokens.next()
-                    .ok_or_else(|| format!("line {}: endpoint '{name}' missing path", lineno + 1))?;
+                let method_str = tokens.next().ok_or_else(|| {
+                    format!("line {}: endpoint '{name}' missing HTTP method", lineno + 1)
+                })?;
+                let path = tokens.next().ok_or_else(|| {
+                    format!("line {}: endpoint '{name}' missing path", lineno + 1)
+                })?;
 
                 validate_ident(name, lineno)?;
-                let method = Method::parse(method_str)
-                    .map_err(|e| format!("line {}: {e}", lineno + 1))?;
+                let method =
+                    Method::parse(method_str).map_err(|e| format!("line {}: {e}", lineno + 1))?;
                 if !path.starts_with('/') {
-                    return Err(format!("line {}: endpoint path must start with '/' (got '{path}')", lineno + 1));
+                    return Err(format!(
+                        "line {}: endpoint path must start with '/' (got '{path}')",
+                        lineno + 1
+                    ));
                 }
 
                 // optional trailing qualifiers: auth=<scheme> tags=<t1,t2>
@@ -621,8 +676,9 @@ pub fn parse(source: &str) -> Result<BridgeFile, String> {
                 let mut tags: Vec<String> = Vec::new();
                 for qual in tokens {
                     if let Some(scheme) = qual.strip_prefix("auth=") {
-                        ep_auth = Some(Auth::parse(scheme)
-                            .map_err(|e| format!("line {}: {e}", lineno + 1))?);
+                        ep_auth = Some(
+                            Auth::parse(scheme).map_err(|e| format!("line {}: {e}", lineno + 1))?,
+                        );
                     } else if let Some(tag_list) = qual.strip_prefix("tags=") {
                         tags.extend(tag_list.split(',').map(str::to_string));
                     }
@@ -636,11 +692,21 @@ pub fn parse(source: &str) -> Result<BridgeFile, String> {
                         auth: ep_auth,
                         tags,
                     }),
-                    None => return Err(format!("line {}: 'endpoint' must appear inside a service block", lineno + 1)),
+                    None => {
+                        return Err(format!(
+                            "line {}: 'endpoint' must appear inside a service block",
+                            lineno + 1
+                        ))
+                    }
                 }
             }
 
-            other => return Err(format!("line {}: unrecognised keyword '{other}'", lineno + 1)),
+            other => {
+                return Err(format!(
+                    "line {}: unrecognised keyword '{other}'",
+                    lineno + 1
+                ))
+            }
         }
     }
 
@@ -651,7 +717,9 @@ pub fn parse(source: &str) -> Result<BridgeFile, String> {
     }
 
     if file.services.is_empty() {
-        return Err("no services found — file must contain at least one 'service' block".to_string());
+        return Err(
+            "no services found — file must contain at least one 'service' block".to_string(),
+        );
     }
 
     // Check for duplicate service names
@@ -685,7 +753,10 @@ fn validate_ident(name: &str, lineno: usize) -> Result<(), String> {
     if name.is_empty() {
         return Err(format!("line {}: identifier cannot be empty", lineno + 1));
     }
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(format!(
             "line {}: identifier '{name}' must contain only alphanumeric characters, '_', or '-'",
             lineno + 1
@@ -698,7 +769,8 @@ fn validate_service(svc: &Service, lineno: usize) -> Result<(), String> {
     if svc.endpoints.is_empty() {
         return Err(format!(
             "service '{}' (near line {}): must have at least one endpoint",
-            svc.name, lineno + 1
+            svc.name,
+            lineno + 1
         ));
     }
 
@@ -727,7 +799,11 @@ fn validate_service(svc: &Service, lineno: usize) -> Result<(), String> {
 
     // Validate middleware names are valid identifiers
     for mw in &svc.middleware {
-        if mw.is_empty() || !mw.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        if mw.is_empty()
+            || !mw
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
             return Err(format!(
                 "service '{}': invalid middleware name '{}' — must be alphanumeric with _ or -",
                 svc.name, mw
@@ -799,7 +875,8 @@ mod tests {
 
     #[test]
     fn per_endpoint_auth() {
-        let src = "service mixed\nendpoint public GET /pub\nendpoint private POST /priv auth=bearer\n";
+        let src =
+            "service mixed\nendpoint public GET /pub\nendpoint private POST /priv auth=bearer\n";
         let svc = compile(src).unwrap();
         assert_eq!(svc.endpoints[0].auth, None);
         assert_eq!(svc.endpoints[1].auth, Some(Auth::Bearer));
@@ -871,7 +948,8 @@ mod tests {
 
     #[test]
     fn mixed_comment_styles() {
-        let src = "# hash comment\n// slash comment\nservice svc\n# ep comment\nendpoint ep GET /path\n";
+        let src =
+            "# hash comment\n// slash comment\nservice svc\n# ep comment\nendpoint ep GET /path\n";
         let svc = compile(src).unwrap();
         assert_eq!(svc.name, "svc");
     }
@@ -962,7 +1040,10 @@ mod tests {
     #[test]
     fn same_path_different_methods_ok() {
         let src = "service s\nendpoint list GET /items\nendpoint create POST /items\n";
-        assert!(parse(src).is_ok(), "same path with different methods should be fine");
+        assert!(
+            parse(src).is_ok(),
+            "same path with different methods should be fine"
+        );
     }
 
     // ── Middleware name validation ─────────────────────────────────────────
@@ -1085,5 +1166,4 @@ mod tests {
         let errs = parse_with_errors("").unwrap_err();
         assert_eq!(errs[0].code, "E0003");
     }
-
 }

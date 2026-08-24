@@ -398,12 +398,8 @@ mod tests {
     fn test_service_container_list_services() {
         let container = ServiceContainer::new();
 
-        container
-            .register(ServiceDef::new("UserService"))
-            .unwrap();
-        container
-            .register(ServiceDef::new("PostService"))
-            .unwrap();
+        container.register(ServiceDef::new("UserService")).unwrap();
+        container.register(ServiceDef::new("PostService")).unwrap();
         container
             .register(ServiceDef::new("CommentService"))
             .unwrap();
@@ -416,12 +412,8 @@ mod tests {
     fn test_service_container_clear() {
         let container = ServiceContainer::new();
 
-        container
-            .register(ServiceDef::new("UserService"))
-            .unwrap();
-        container
-            .register(ServiceDef::new("PostService"))
-            .unwrap();
+        container.register(ServiceDef::new("UserService")).unwrap();
+        container.register(ServiceDef::new("PostService")).unwrap();
 
         assert_eq!(container.list_services().unwrap().len(), 2);
 
@@ -529,10 +521,10 @@ mod tests {
     fn test_container_multiple_services() {
         let container = ServiceContainer::new();
 
-        let user_service = ServiceDef::new("UserService")
-            .with_constructor(|| Box::new("user_instance"));
-        let post_service = ServiceDef::new("PostService")
-            .with_constructor(|| Box::new("post_instance"));
+        let user_service =
+            ServiceDef::new("UserService").with_constructor(|| Box::new("user_instance"));
+        let post_service =
+            ServiceDef::new("PostService").with_constructor(|| Box::new("post_instance"));
 
         container.register(user_service).unwrap();
         container.register(post_service).unwrap();

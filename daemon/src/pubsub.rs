@@ -17,25 +17,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone)]
 pub struct Message {
-    pub id:          String,
-    pub topic:       String,
-    pub payload:     String,
-    pub attributes:  HashMap<String, String>,
+    pub id: String,
+    pub topic: String,
+    pub payload: String,
+    pub attributes: HashMap<String, String>,
     pub published_at: u64,
     pub ordering_key: Option<String>,
-    pub attempt:     u32,
+    pub attempt: u32,
 }
 
 impl Message {
     pub fn new(topic: impl Into<String>, payload: impl Into<String>) -> Self {
         Message {
-            id:           gen_id(),
-            topic:        topic.into(),
-            payload:      payload.into(),
-            attributes:   HashMap::new(),
+            id: gen_id(),
+            topic: topic.into(),
+            payload: payload.into(),
+            attributes: HashMap::new(),
             published_at: now_ms(),
             ordering_key: None,
-            attempt:      0,
+            attempt: 0,
         }
     }
 
@@ -50,21 +50,25 @@ impl Message {
     }
 
     pub fn to_json(&self) -> String {
-        let attrs: String = self.attributes.iter()
+        let attrs: String = self
+            .attributes
+            .iter()
             .map(|(k, v)| format!(",\"{}\":\"{}\"", k, v))
             .collect();
-        let ordering = self.ordering_key.as_deref()
+        let ordering = self
+            .ordering_key
+            .as_deref()
             .map(|k| format!(",\"ordering_key\":\"{}\"", k))
             .unwrap_or_default();
         format!(
             r#"{{"id":"{id}","topic":"{topic}","payload":{payload},"published_at":{ts},"attempt":{attempt}{ordering},{attrs}}}"#,
-            id      = self.id,
-            topic   = self.topic,
+            id = self.id,
+            topic = self.topic,
             payload = self.payload,
-            ts      = self.published_at,
+            ts = self.published_at,
             attempt = self.attempt,
             ordering = ordering,
-            attrs   = attrs.trim_start_matches(','),
+            attrs = attrs.trim_start_matches(','),
         )
     }
 }
@@ -73,21 +77,21 @@ impl Message {
 
 #[derive(Debug, Clone)]
 pub struct SubscriptionConfig {
-    pub max_concurrency:     usize,
-    pub max_retries:         u32,
-    pub retry_delay_ms:      u64,
-    pub ack_deadline_secs:   u32,
-    pub message_ordering:    bool,
+    pub max_concurrency: usize,
+    pub max_retries: u32,
+    pub retry_delay_ms: u64,
+    pub ack_deadline_secs: u32,
+    pub message_ordering: bool,
 }
 
 impl Default for SubscriptionConfig {
     fn default() -> Self {
         SubscriptionConfig {
-            max_concurrency:   10,
-            max_retries:       3,
-            retry_delay_ms:    1000,
+            max_concurrency: 10,
+            max_retries: 3,
+            retry_delay_ms: 1000,
             ack_deadline_secs: 30,
-            message_ordering:  false,
+            message_ordering: false,
         }
     }
 }
@@ -105,7 +109,7 @@ enum MessageState {
 #[derive(Debug, Clone)]
 struct QueueEntry {
     message: Message,
-    state:   MessageState,
+    state: MessageState,
 }
 
 // ── Broker ────────────────────────────────────────────────────────────────────
@@ -134,10 +138,10 @@ impl Broker {
     pub fn new() -> Self {
         Broker(Arc::new(Mutex::new(BrokerInner {
             subscriptions: HashMap::new(),
-            queues:        HashMap::new(),
-            in_flight:     HashMap::new(),
-            configs:       HashMap::new(),
-            dlq:           HashMap::new(),
+            queues: HashMap::new(),
+            in_flight: HashMap::new(),
+            configs: HashMap::new(),
+            dlq: HashMap::new(),
             publish_count: 0,
         })))
     }
@@ -145,12 +149,14 @@ impl Broker {
     /// Register a subscriber on a topic.
     pub fn subscribe(&self, topic: &str, subscriber: &str, config: SubscriptionConfig) {
         let mut inner = self.0.lock().unwrap();
-        inner.subscriptions
+        inner
+            .subscriptions
             .entry(topic.to_string())
             .or_default()
             .push(subscriber.to_string());
         inner.configs.insert(subscriber.to_string(), config);
-        inner.queues
+        inner
+            .queues
             .entry((topic.to_string(), subscriber.to_string()))
             .or_default();
     }
@@ -159,17 +165,19 @@ impl Broker {
     pub fn publish(&self, msg: Message) -> u64 {
         let mut inner = self.0.lock().unwrap();
         inner.publish_count += 1;
-        let subs = inner.subscriptions
+        let subs = inner
+            .subscriptions
             .get(&msg.topic)
             .cloned()
             .unwrap_or_default();
         for sub in &subs {
-            let queue = inner.queues
+            let queue = inner
+                .queues
                 .entry((msg.topic.clone(), sub.clone()))
                 .or_default();
             queue.push_back(QueueEntry {
                 message: msg.clone(),
-                state:   MessageState::Pending,
+                state: MessageState::Pending,
             });
         }
         inner.publish_count
@@ -178,14 +186,21 @@ impl Broker {
     /// Pull the next pending message for a subscriber.
     pub fn pull(&self, topic: &str, subscriber: &str) -> Option<Message> {
         let mut inner = self.0.lock().unwrap();
-        let queue = inner.queues.get_mut(&(topic.to_string(), subscriber.to_string()))?;
+        let queue = inner
+            .queues
+            .get_mut(&(topic.to_string(), subscriber.to_string()))?;
 
-        let entry = queue.iter_mut().find(|e| matches!(e.state, MessageState::Pending))?;
+        let entry = queue
+            .iter_mut()
+            .find(|e| matches!(e.state, MessageState::Pending))?;
         entry.state = MessageState::Delivered { at: now_ms() };
         entry.message.attempt += 1;
 
         let msg = entry.message.clone();
-        inner.in_flight.insert(msg.id.clone(), (topic.to_string(), subscriber.to_string(), now_ms()));
+        inner.in_flight.insert(
+            msg.id.clone(),
+            (topic.to_string(), subscriber.to_string(), now_ms()),
+        );
         Some(msg)
     }
 
@@ -205,20 +220,18 @@ impl Broker {
     pub fn nack(&self, msg_id: &str, reason: &str) -> bool {
         let mut inner = self.0.lock().unwrap();
         if let Some((topic, sub, _)) = inner.in_flight.remove(msg_id) {
-            let max_retries = inner.configs.get(&sub)
-                .map(|c| c.max_retries)
-                .unwrap_or(3);
-            let queue = inner.queues
+            let max_retries = inner.configs.get(&sub).map(|c| c.max_retries).unwrap_or(3);
+            let queue = inner
+                .queues
                 .entry((topic.clone(), sub.clone()))
                 .or_default();
             if let Some(entry) = queue.iter_mut().find(|e| e.message.id == msg_id) {
                 if entry.message.attempt > max_retries {
                     let dlq_msg = entry.message.clone();
-                    entry.state = MessageState::DeadLetter { reason: reason.to_string() };
-                    inner.dlq
-                        .entry((topic, sub))
-                        .or_default()
-                        .push(dlq_msg);
+                    entry.state = MessageState::DeadLetter {
+                        reason: reason.to_string(),
+                    };
+                    inner.dlq.entry((topic, sub)).or_default().push(dlq_msg);
                 } else {
                     entry.state = MessageState::Pending; // requeue
                 }
@@ -231,16 +244,22 @@ impl Broker {
     /// Queue depth for a topic/subscriber pair.
     pub fn queue_depth(&self, topic: &str, subscriber: &str) -> usize {
         let inner = self.0.lock().unwrap();
-        inner.queues
+        inner
+            .queues
             .get(&(topic.to_string(), subscriber.to_string()))
-            .map(|q| q.iter().filter(|e| matches!(e.state, MessageState::Pending)).count())
+            .map(|q| {
+                q.iter()
+                    .filter(|e| matches!(e.state, MessageState::Pending))
+                    .count()
+            })
             .unwrap_or(0)
     }
 
     /// Dead-letter queue depth.
     pub fn dlq_depth(&self, topic: &str, subscriber: &str) -> usize {
         let inner = self.0.lock().unwrap();
-        inner.dlq
+        inner
+            .dlq
             .get(&(topic.to_string(), subscriber.to_string()))
             .map(|q| q.len())
             .unwrap_or(0)
@@ -262,7 +281,9 @@ impl Broker {
 }
 
 impl Default for Broker {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -298,7 +319,7 @@ mod tests {
     fn publish_fans_out() {
         let b = basic_broker();
         b.publish(Message::new("orders", r#"{"id":1}"#));
-        assert_eq!(b.queue_depth("orders", "billing"),  1);
+        assert_eq!(b.queue_depth("orders", "billing"), 1);
         assert_eq!(b.queue_depth("orders", "shipping"), 1);
     }
 
@@ -335,10 +356,14 @@ mod tests {
     #[test]
     fn nack_to_dlq_after_max_retries() {
         let b = Broker::new();
-        b.subscribe("jobs", "worker", SubscriptionConfig {
-            max_retries: 1,
-            ..Default::default()
-        });
+        b.subscribe(
+            "jobs",
+            "worker",
+            SubscriptionConfig {
+                max_retries: 1,
+                ..Default::default()
+            },
+        );
         b.publish(Message::new("jobs", r#"{"task":"x"}"#));
         let msg = b.pull("jobs", "worker").unwrap();
         b.nack(&msg.id, "fail");

@@ -106,10 +106,7 @@ impl ShutdownCoordinator {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(format!(
-                "Cleanup errors: {}",
-                errors.join("; ")
-            ))
+            Err(format!("Cleanup errors: {}", errors.join("; ")))
         }
     }
 }

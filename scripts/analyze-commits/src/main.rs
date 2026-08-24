@@ -1,9 +1,9 @@
 #!/usr/bin/env rust-script
 //! Bridge Commit Analyzer
-//! 
+//!
 //! Parses e-commits/commits.json and categorizes Encore commits by feature area.
 //! Generates a prioritized implementation roadmap for Bridge Framework.
-//! 
+//!
 //! Usage: cargo run --bin analyze-commits
 
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ fn main() {
     // Read commits.json
     let commits_path = "e-commits/commits.json";
     println!("📖 Reading commits from: {}", commits_path);
-    
+
     if !Path::new(commits_path).exists() {
         eprintln!("❌ Error: {} not found", commits_path);
         eprintln!("   Make sure you're running from the project root.");
@@ -37,10 +37,10 @@ fn main() {
     // Parse and categorize commits
     println!("🏗️  Categorizing commits by feature area...");
     let categories = categorize_commits(&commits_json);
-    
+
     println!("\n📊 Commit Categories:");
     println!("─────────────────────────────────────────");
-    
+
     let mut total = 0;
     for (category, count) in &categories {
         println!("  {:30} {:>4} commits", category, count);
@@ -62,7 +62,7 @@ fn main() {
         };
         println!("  {}. {} {}", rank + 1, priority_icon, category);
     }
-    
+
     println!("\n✅ Analysis complete!");
     println!("   Next: Implement features in priority order");
     println!("   Track progress in: IMPLEMENTATION_TRACKER.md");
@@ -71,19 +71,40 @@ fn main() {
 /// Categorize commits by analyzing subject/body text for keywords
 fn categorize_commits(json: &str) -> HashMap<String, usize> {
     let mut categories = HashMap::new();
-    
+
     // Feature keywords to search for
     let patterns = vec![
-        ("Core Runtime", vec!["runtime", "runtimes-core", "metrics", "tracing", "trace"]),
-        ("TypeScript Runtime", vec!["runtimes-js", "typescript", "tsparser", "encore-ts"]),
-        ("Authentication", vec!["auth", "authentication", "jwt", "session", "oauth"]),
-        ("Object Storage", vec!["storage", "bucket", "s3", "object-storage"]),
-        ("Pub/Sub", vec!["pubsub", "pub-sub", "topic", "subscription", "message"]),
+        (
+            "Core Runtime",
+            vec!["runtime", "runtimes-core", "metrics", "tracing", "trace"],
+        ),
+        (
+            "TypeScript Runtime",
+            vec!["runtimes-js", "typescript", "tsparser", "encore-ts"],
+        ),
+        (
+            "Authentication",
+            vec!["auth", "authentication", "jwt", "session", "oauth"],
+        ),
+        (
+            "Object Storage",
+            vec!["storage", "bucket", "s3", "object-storage"],
+        ),
+        (
+            "Pub/Sub",
+            vec!["pubsub", "pub-sub", "topic", "subscription", "message"],
+        ),
         ("Caching", vec!["cache", "redis", "mget", "mset"]),
         ("Secrets", vec!["secret", "vault", "jit"]),
-        ("Infrastructure", vec!["infra", "config", "tls", "database", "sqldb"]),
+        (
+            "Infrastructure",
+            vec!["infra", "config", "tls", "database", "sqldb"],
+        ),
         ("Testing", vec!["test", "e2e", "mock"]),
-        ("Documentation", vec!["docs", "documentation", "readme", "tutorial"]),
+        (
+            "Documentation",
+            vec!["docs", "documentation", "readme", "tutorial"],
+        ),
         ("CLI", vec!["cli", "command", "daemon"]),
         ("Streaming", vec!["stream", "websocket", "sse", "ws"]),
         ("Build/Deploy", vec!["build", "deploy", "docker", "eject"]),
@@ -101,7 +122,7 @@ fn categorize_commits(json: &str) -> HashMap<String, usize> {
     // Look for "subject": "..." patterns
     for line in json.lines() {
         let line_lower = line.to_lowercase();
-        
+
         if line_lower.contains("\"subject\"") || line_lower.contains("\"body\"") {
             for (category, keywords) in &patterns {
                 for keyword in keywords {
@@ -152,7 +173,8 @@ fn generate_priorities(categories: &HashMap<String, usize>) -> Vec<(String, usiz
     let mut priority_list: Vec<(String, usize)> = categories
         .iter()
         .map(|(cat, count)| {
-            let weight = weights.iter()
+            let weight = weights
+                .iter()
                 .find(|(name, _)| name == cat)
                 .map(|(_, w)| w)
                 .unwrap_or(&0);
@@ -180,7 +202,7 @@ mod tests {
         let mut categories = HashMap::new();
         categories.insert("Core Runtime".to_string(), 100);
         categories.insert("Documentation".to_string(), 50);
-        
+
         let priorities = generate_priorities(&categories);
         assert_eq!(priorities[0].0, "Core Runtime");
     }

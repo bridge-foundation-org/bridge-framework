@@ -50,16 +50,30 @@ pub fn create(name: &str) -> Result<String, String> {
     }
     let cn = cname(name);
     // Check if already running
-    let existing = run(&["ps", "-a", "--filter", &format!("name={cn}"), "--format", "{{.Names}}"])?;
+    let existing = run(&[
+        "ps",
+        "-a",
+        "--filter",
+        &format!("name={cn}"),
+        "--format",
+        "{{.Names}}",
+    ])?;
     if !existing.is_empty() {
-        return Err(format!("container '{cn}' already exists — use 'pg-destroy {name}' first"));
+        return Err(format!(
+            "container '{cn}' already exists — use 'pg-destroy {name}' first"
+        ));
     }
     let id = run(&[
-        "run", "-d",
-        "--name", &cn,
-        "-e", &format!("POSTGRES_PASSWORD={PG_PASSWORD}"),
-        "-e", &format!("POSTGRES_USER={PG_USER}"),
-        "-p", "5432:5432",
+        "run",
+        "-d",
+        "--name",
+        &cn,
+        "-e",
+        &format!("POSTGRES_PASSWORD={PG_PASSWORD}"),
+        "-e",
+        &format!("POSTGRES_USER={PG_USER}"),
+        "-p",
+        "5432:5432",
         PG_IMAGE,
     ])?;
     Ok(format!("created {cn} ({id})"))
@@ -71,9 +85,12 @@ pub fn status() -> Result<String, String> {
         return Ok("docker not available".into());
     }
     let output = run(&[
-        "ps", "-a",
-        "--filter", "name=bridge_pg_",
-        "--format", r#"{"name":"{{.Names}}","status":"{{.Status}}","id":"{{.ID}}"}"#,
+        "ps",
+        "-a",
+        "--filter",
+        "name=bridge_pg_",
+        "--format",
+        r#"{"name":"{{.Names}}","status":"{{.Status}}","id":"{{.ID}}"}"#,
     ])?;
     if output.is_empty() {
         Ok(r#"{"containers":[],"message":"no bridge postgres containers found"}"#.into())
@@ -92,9 +109,12 @@ pub fn migrate(sql: &str) -> Result<String, String> {
     // Find first running bridge_pg_ container
     let cn = run(&[
         "ps",
-        "--filter", "name=bridge_pg_",
-        "--filter", "status=running",
-        "--format", "{{.Names}}",
+        "--filter",
+        "name=bridge_pg_",
+        "--filter",
+        "status=running",
+        "--format",
+        "{{.Names}}",
     ])?;
     let cn = cn.lines().next().unwrap_or("").trim().to_string();
     if cn.is_empty() {

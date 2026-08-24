@@ -228,8 +228,7 @@ mod tests {
 
     #[test]
     fn test_project_config_description() {
-        let config = ProjectConfig::new("myapp", TemplateType::RestApi)
-            .with_description("My app");
+        let config = ProjectConfig::new("myapp", TemplateType::RestApi).with_description("My app");
         assert_eq!(config.description, "My app");
     }
 
@@ -281,8 +280,8 @@ mod tests {
 
     #[test]
     fn test_generator_readme() {
-        let config = ProjectConfig::new("myapp", TemplateType::RestApi)
-            .with_description("Test app");
+        let config =
+            ProjectConfig::new("myapp", TemplateType::RestApi).with_description("Test app");
         let gen = TemplateGenerator::new(config);
         let readme = gen.readme();
 

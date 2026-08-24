@@ -28,8 +28,8 @@ pub enum SecretSource {
 
 #[derive(Debug, Clone)]
 pub struct Secret {
-    pub name:     String,
-    pub source:   SecretSource,
+    pub name: String,
+    pub source: SecretSource,
     pub redacted: bool,
 }
 
@@ -37,13 +37,10 @@ impl Secret {
     /// Resolve the actual secret value. Returns `None` if not available.
     pub fn resolve(&self) -> Option<String> {
         match &self.source {
-            SecretSource::Environment(var_name) => {
-                std::env::var(var_name).ok()
-            }
-            SecretSource::File(path) => {
-                std::fs::read_to_string(path).ok()
-                    .map(|s| s.trim().to_string())
-            }
+            SecretSource::Environment(var_name) => std::env::var(var_name).ok(),
+            SecretSource::File(path) => std::fs::read_to_string(path)
+                .ok()
+                .map(|s| s.trim().to_string()),
             SecretSource::Inline(value) => Some(value.clone()),
             SecretSource::ExternalVault { .. } => {
                 // In production: call vault API. For local dev: env var fallback.
@@ -84,34 +81,43 @@ impl SecretsRegistry {
     /// Register an env-based secret.
     pub fn register_env(&self, name: &str, env_var: &str) {
         let mut inner = self.0.lock().unwrap();
-        inner.secrets.insert(name.to_string(), Secret {
-            name:     name.to_string(),
-            source:   SecretSource::Environment(env_var.to_string()),
-            redacted: true,
-        });
+        inner.secrets.insert(
+            name.to_string(),
+            Secret {
+                name: name.to_string(),
+                source: SecretSource::Environment(env_var.to_string()),
+                redacted: true,
+            },
+        );
     }
 
     /// Register an inline secret (development/testing only).
     pub fn register_inline(&self, name: &str, value: &str) {
         let mut inner = self.0.lock().unwrap();
-        inner.secrets.insert(name.to_string(), Secret {
-            name:     name.to_string(),
-            source:   SecretSource::Inline(value.to_string()),
-            redacted: true,
-        });
+        inner.secrets.insert(
+            name.to_string(),
+            Secret {
+                name: name.to_string(),
+                source: SecretSource::Inline(value.to_string()),
+                redacted: true,
+            },
+        );
     }
 
     /// Register an external vault secret.
     pub fn register_vault(&self, name: &str, provider: &str, path: &str) {
         let mut inner = self.0.lock().unwrap();
-        inner.secrets.insert(name.to_string(), Secret {
-            name:     name.to_string(),
-            source:   SecretSource::ExternalVault {
-                provider: provider.to_string(),
-                path:     path.to_string(),
+        inner.secrets.insert(
+            name.to_string(),
+            Secret {
+                name: name.to_string(),
+                source: SecretSource::ExternalVault {
+                    provider: provider.to_string(),
+                    path: path.to_string(),
+                },
+                redacted: true,
             },
-            redacted: true,
-        });
+        );
     }
 
     /// Get the resolved value of a secret.
@@ -128,31 +134,34 @@ impl SecretsRegistry {
     /// List all registered secret names and their status.
     pub fn list_json(&self) -> String {
         let inner = self.0.lock().unwrap();
-        let parts: Vec<String> = inner.secrets.values().map(|s| {
-            let source_kind = match &s.source {
-                SecretSource::Environment(var) => format!("env:{var}"),
-                SecretSource::File(path)       => format!("file:{path}"),
-                SecretSource::Inline(_)        => "inline".to_string(),
-                SecretSource::ExternalVault { provider, .. } => format!("vault:{provider}"),
-            };
-            format!(
-                r#"{{"name":"{name}","source":"{source}","set":{set}}}"#,
-                name   = s.name,
-                source = source_kind,
-                set    = s.is_set(),
-            )
-        }).collect();
+        let parts: Vec<String> = inner
+            .secrets
+            .values()
+            .map(|s| {
+                let source_kind = match &s.source {
+                    SecretSource::Environment(var) => format!("env:{var}"),
+                    SecretSource::File(path) => format!("file:{path}"),
+                    SecretSource::Inline(_) => "inline".to_string(),
+                    SecretSource::ExternalVault { provider, .. } => format!("vault:{provider}"),
+                };
+                format!(
+                    r#"{{"name":"{name}","source":"{source}","set":{set}}}"#,
+                    name = s.name,
+                    source = source_kind,
+                    set = s.is_set(),
+                )
+            })
+            .collect();
         format!("[{}]", parts.join(","))
     }
 
     /// Check required secrets are all set. Returns names of missing secrets.
     pub fn check_required(&self, required: &[&str]) -> Vec<String> {
         let inner = self.0.lock().unwrap();
-        required.iter()
+        required
+            .iter()
             .filter(|&&name| {
-                inner.secrets.get(name)
-                    .map(|s| !s.is_set())
-                    .unwrap_or(true) // missing from registry = not set
+                inner.secrets.get(name).map(|s| !s.is_set()).unwrap_or(true) // missing from registry = not set
             })
             .map(|s| s.to_string())
             .collect()
@@ -163,11 +172,15 @@ impl SecretsRegistry {
         self.0.lock().unwrap().secrets.len()
     }
 
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl Default for SecretsRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── Simple gzip-like encoding (RLE for secret payloads) ───────────────────────
@@ -189,19 +202,16 @@ pub mod compress {
         }
         (0..hex.len())
             .step_by(2)
-            .map(|i| {
-                u8::from_str_radix(&hex[i..i+2], 16)
-                    .map_err(|e| e.to_string())
-            })
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| e.to_string()))
             .collect()
     }
 
-    pub fn encode_str(s: &str) -> String { encode(s.as_bytes()) }
+    pub fn encode_str(s: &str) -> String {
+        encode(s.as_bytes())
+    }
 
     pub fn decode_str(hex: &str) -> Result<String, String> {
-        decode(hex).and_then(|b|
-            String::from_utf8(b).map_err(|e| e.to_string())
-        )
+        decode(hex).and_then(|b| String::from_utf8(b).map_err(|e| e.to_string()))
     }
 }
 
@@ -266,8 +276,8 @@ mod tests {
     #[test]
     fn compress_roundtrip() {
         let original = "hello, Bridge secrets!";
-        let encoded  = compress::encode_str(original);
-        let decoded  = compress::decode_str(&encoded).unwrap();
+        let encoded = compress::encode_str(original);
+        let decoded = compress::decode_str(&encoded).unwrap();
         assert_eq!(decoded, original);
     }
 

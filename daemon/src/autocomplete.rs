@@ -110,7 +110,7 @@ impl AutocompleteGenerator {
         let mut script = String::from("_bridge_completion() {\n");
         script.push_str("  local cur prev words cword\n");
         script.push_str("  _get_comp_words_by_ref -n : cur prev words cword\n\n");
-        
+
         script.push_str("  local commands=\"");
         let cmd_names: Vec<&str> = self.commands.iter().map(|c| c.name.as_str()).collect();
         script.push_str(&cmd_names.join(" "));
@@ -145,24 +145,32 @@ impl AutocompleteGenerator {
     pub fn fish_completion(&self) -> String {
         let mut script = String::new();
         for cmd in &self.commands {
-            script.push_str(&format!("complete -c bridge -n \"__fish_use_subcommand_from_list\" -a {} -d \"{}\"\n", cmd.name, cmd.description));
+            script.push_str(&format!(
+                "complete -c bridge -n \"__fish_use_subcommand_from_list\" -a {} -d \"{}\"\n",
+                cmd.name, cmd.description
+            ));
         }
         script
     }
 
     /// Generate powershell completion script
     pub fn powershell_completion(&self) -> String {
-        let mut script = String::from("Register-ArgumentCompleter -CommandName bridge -ScriptBlock {\n");
+        let mut script =
+            String::from("Register-ArgumentCompleter -CommandName bridge -ScriptBlock {\n");
         script.push_str("  param($wordToComplete, $commandAst, $cursorPosition)\n");
         script.push_str("  $commands = @(");
-        
-        let cmd_names: Vec<String> = self.commands.iter()
+
+        let cmd_names: Vec<String> = self
+            .commands
+            .iter()
             .map(|c| format!("'{}'", c.name))
             .collect();
         script.push_str(&cmd_names.join(", "));
         script.push_str(")\n\n");
 
-        script.push_str("  $commands | Where-Object { $_ -like \"$wordToComplete*\" } | ForEach-Object {\n");
+        script.push_str(
+            "  $commands | Where-Object { $_ -like \"$wordToComplete*\" } | ForEach-Object {\n",
+        );
         script.push_str("    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)\n");
         script.push_str("  }\n");
         script.push_str("}\n");
@@ -231,8 +239,7 @@ mod tests {
 
     #[test]
     fn test_option_with_short() {
-        let opt = CliOption::new_flag("verbose", "Verbose")
-            .with_short("v");
+        let opt = CliOption::new_flag("verbose", "Verbose").with_short("v");
         assert_eq!(opt.short, Some("v".to_string()));
     }
 
@@ -291,7 +298,7 @@ mod tests {
             .command(Command::new("init", "Init"))
             .command(Command::new("run", "Run"))
             .command(Command::new("test", "Test"));
-        
+
         assert_eq!(gen.commands.len(), 3);
     }
 
@@ -299,11 +306,9 @@ mod tests {
     fn test_command_builder_chain() {
         let opt1 = CliOption::new_flag("verbose", "Verbose").with_short("v");
         let opt2 = CliOption::new_value("config", "Config file");
-        
-        let cmd = Command::new("build", "Build")
-            .option(opt1)
-            .option(opt2);
-        
+
+        let cmd = Command::new("build", "Build").option(opt1).option(opt2);
+
         assert_eq!(cmd.options.len(), 2);
     }
 }

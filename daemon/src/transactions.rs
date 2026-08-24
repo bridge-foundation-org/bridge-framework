@@ -131,7 +131,9 @@ impl TransactionManager {
 
     /// Add operation to transaction
     pub fn add_operation(&mut self, tx_id: &str, op: Operation) -> Result<(), String> {
-        let tx = self.transactions.get_mut(tx_id)
+        let tx = self
+            .transactions
+            .get_mut(tx_id)
             .ok_or_else(|| format!("Transaction {} not found", tx_id))?;
 
         if tx.state != TransactionState::Active {
@@ -144,7 +146,9 @@ impl TransactionManager {
 
     /// Commit transaction
     pub fn commit(&mut self, tx_id: &str) -> Result<(), String> {
-        let tx = self.transactions.get_mut(tx_id)
+        let tx = self
+            .transactions
+            .get_mut(tx_id)
             .ok_or_else(|| format!("Transaction {} not found", tx_id))?;
 
         if tx.state != TransactionState::Active {
@@ -157,7 +161,9 @@ impl TransactionManager {
 
     /// Rollback transaction
     pub fn rollback(&mut self, tx_id: &str) -> Result<(), String> {
-        let tx = self.transactions.get_mut(tx_id)
+        let tx = self
+            .transactions
+            .get_mut(tx_id)
             .ok_or_else(|| format!("Transaction {} not found", tx_id))?;
 
         tx.state = TransactionState::RolledBack;
@@ -208,8 +214,7 @@ mod tests {
 
     #[test]
     fn test_operation_with_data() {
-        let op = Operation::new("op1", "insert")
-            .with_data("key", "value");
+        let op = Operation::new("op1", "insert").with_data("key", "value");
         assert_eq!(op.data.get("key"), Some(&"value".to_string()));
     }
 
@@ -317,20 +322,20 @@ mod tests {
     #[test]
     fn test_transaction_manager_full_workflow() {
         let mut tm = TransactionManager::new(IsolationLevel::Serializable);
-        
+
         tm.begin("tx1").unwrap();
-        
+
         let op1 = Operation::new("op1", "insert").with_data("id", "1");
         let op2 = Operation::new("op2", "update").with_data("id", "2");
-        
+
         tm.add_operation("tx1", op1).unwrap();
         tm.add_operation("tx1", op2).unwrap();
-        
+
         let tx = tm.get_transaction("tx1").unwrap();
         assert_eq!(tx.operations.len(), 2);
-        
+
         tm.commit("tx1").unwrap();
-        
+
         let tx = tm.get_transaction("tx1").unwrap();
         assert_eq!(tx.state, TransactionState::Committed);
     }

@@ -19,9 +19,9 @@ pub type Labels = Vec<(String, String)>;
 /// A single recorded sample.
 #[derive(Debug, Clone)]
 pub struct Sample {
-    pub value:     f64,
+    pub value: f64,
     pub timestamp: u64, // unix seconds
-    pub labels:    Labels,
+    pub labels: Labels,
 }
 
 /// All supported metric kinds.
@@ -38,9 +38,9 @@ pub enum MetricValue {
 /// A named metric with its samples.
 #[derive(Debug, Clone)]
 pub struct Metric {
-    pub name:    String,
-    pub help:    String,
-    pub kind:    MetricKind,
+    pub name: String,
+    pub help: String,
+    pub kind: MetricKind,
     pub samples: Vec<Sample>,
 }
 
@@ -55,8 +55,8 @@ pub enum MetricKind {
 impl MetricKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            MetricKind::Counter   => "counter",
-            MetricKind::Gauge     => "gauge",
+            MetricKind::Counter => "counter",
+            MetricKind::Gauge => "gauge",
             MetricKind::Histogram => "histogram",
         }
     }
@@ -84,38 +84,59 @@ impl Registry {
     /// Increment a counter by `delta` (default 1).
     pub fn counter_inc(&self, name: &str, help: &str, delta: f64, labels: Labels) {
         let mut inner = self.0.lock().unwrap();
-        let m = inner.metrics.entry(name.to_string()).or_insert_with(|| Metric {
-            name:    name.to_string(),
-            help:    help.to_string(),
-            kind:    MetricKind::Counter,
-            samples: Vec::new(),
-        });
+        let m = inner
+            .metrics
+            .entry(name.to_string())
+            .or_insert_with(|| Metric {
+                name: name.to_string(),
+                help: help.to_string(),
+                kind: MetricKind::Counter,
+                samples: Vec::new(),
+            });
         let prev = m.samples.last().map(|s| s.value).unwrap_or(0.0);
-        m.samples.push(Sample { value: prev + delta, timestamp: now_secs(), labels });
+        m.samples.push(Sample {
+            value: prev + delta,
+            timestamp: now_secs(),
+            labels,
+        });
     }
 
     /// Set a gauge to an absolute value.
     pub fn gauge_set(&self, name: &str, help: &str, value: f64, labels: Labels) {
         let mut inner = self.0.lock().unwrap();
-        let m = inner.metrics.entry(name.to_string()).or_insert_with(|| Metric {
-            name:    name.to_string(),
-            help:    help.to_string(),
-            kind:    MetricKind::Gauge,
-            samples: Vec::new(),
+        let m = inner
+            .metrics
+            .entry(name.to_string())
+            .or_insert_with(|| Metric {
+                name: name.to_string(),
+                help: help.to_string(),
+                kind: MetricKind::Gauge,
+                samples: Vec::new(),
+            });
+        m.samples.push(Sample {
+            value,
+            timestamp: now_secs(),
+            labels,
         });
-        m.samples.push(Sample { value, timestamp: now_secs(), labels });
     }
 
     /// Record a histogram observation.
     pub fn histogram_observe(&self, name: &str, help: &str, value: f64, labels: Labels) {
         let mut inner = self.0.lock().unwrap();
-        let m = inner.metrics.entry(name.to_string()).or_insert_with(|| Metric {
-            name:    name.to_string(),
-            help:    help.to_string(),
-            kind:    MetricKind::Histogram,
-            samples: Vec::new(),
+        let m = inner
+            .metrics
+            .entry(name.to_string())
+            .or_insert_with(|| Metric {
+                name: name.to_string(),
+                help: help.to_string(),
+                kind: MetricKind::Histogram,
+                samples: Vec::new(),
+            });
+        m.samples.push(Sample {
+            value,
+            timestamp: now_secs(),
+            labels,
         });
-        m.samples.push(Sample { value, timestamp: now_secs(), labels });
     }
 
     // ── Read API ──────────────────────────────────────────────────────────
@@ -133,7 +154,7 @@ impl Registry {
         for m in inner.metrics.values() {
             let last = m.samples.last();
             let value = last.map(|s| s.value).unwrap_or(0.0);
-            let ts    = last.map(|s| s.timestamp).unwrap_or(0);
+            let ts = last.map(|s| s.timestamp).unwrap_or(0);
             parts.push(format!(
                 r#"{{"name":"{name}","kind":"{kind}","help":"{help}","value":{value},"timestamp":{ts},"samples":{count}}}"#,
                 name  = m.name,
@@ -161,7 +182,10 @@ impl Registry {
                     MetricKind::Counter | MetricKind::Gauge => {
                         out.push_str(&format!(
                             "{}{} {} {}\n",
-                            m.name, labels, s.value, s.timestamp * 1000
+                            m.name,
+                            labels,
+                            s.value,
+                            s.timestamp * 1000
                         ));
                     }
                     MetricKind::Histogram => {
@@ -173,11 +197,44 @@ impl Registry {
                         let p50 = percentile(&values, 0.50);
                         let p90 = percentile(&values, 0.90);
                         let p99 = percentile(&values, 0.99);
-                        out.push_str(&format!("{}_bucket{{le=\"0.5\"{sep}{lb}}} {p50} {ts}\n",  m.name, sep = if s.labels.is_empty() { "" } else { "," }, lb = format_labels_inner(&s.labels), p50 = p50, ts = s.timestamp * 1000));
-                        out.push_str(&format!("{}_bucket{{le=\"0.9\"{sep}{lb}}} {p90} {ts}\n",  m.name, sep = if s.labels.is_empty() { "" } else { "," }, lb = format_labels_inner(&s.labels), p90 = p90, ts = s.timestamp * 1000));
-                        out.push_str(&format!("{}_bucket{{le=\"0.99\"{sep}{lb}}} {p99} {ts}\n", m.name, sep = if s.labels.is_empty() { "" } else { "," }, lb = format_labels_inner(&s.labels), p99 = p99, ts = s.timestamp * 1000));
-                        out.push_str(&format!("{}_count{lb} {count} {ts}\n", m.name, lb = labels, count = count, ts = s.timestamp * 1000));
-                        out.push_str(&format!("{}_sum{lb} {sum} {ts}\n",     m.name, lb = labels, sum = sum,     ts = s.timestamp * 1000));
+                        out.push_str(&format!(
+                            "{}_bucket{{le=\"0.5\"{sep}{lb}}} {p50} {ts}\n",
+                            m.name,
+                            sep = if s.labels.is_empty() { "" } else { "," },
+                            lb = format_labels_inner(&s.labels),
+                            p50 = p50,
+                            ts = s.timestamp * 1000
+                        ));
+                        out.push_str(&format!(
+                            "{}_bucket{{le=\"0.9\"{sep}{lb}}} {p90} {ts}\n",
+                            m.name,
+                            sep = if s.labels.is_empty() { "" } else { "," },
+                            lb = format_labels_inner(&s.labels),
+                            p90 = p90,
+                            ts = s.timestamp * 1000
+                        ));
+                        out.push_str(&format!(
+                            "{}_bucket{{le=\"0.99\"{sep}{lb}}} {p99} {ts}\n",
+                            m.name,
+                            sep = if s.labels.is_empty() { "" } else { "," },
+                            lb = format_labels_inner(&s.labels),
+                            p99 = p99,
+                            ts = s.timestamp * 1000
+                        ));
+                        out.push_str(&format!(
+                            "{}_count{lb} {count} {ts}\n",
+                            m.name,
+                            lb = labels,
+                            count = count,
+                            ts = s.timestamp * 1000
+                        ));
+                        out.push_str(&format!(
+                            "{}_sum{lb} {sum} {ts}\n",
+                            m.name,
+                            lb = labels,
+                            sum = sum,
+                            ts = s.timestamp * 1000
+                        ));
                     }
                 }
             }
@@ -195,32 +252,44 @@ impl Registry {
         self.0.lock().unwrap().metrics.len()
     }
 
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl Default for Registry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── Built-in daemon metrics ───────────────────────────────────────────────────
 
 /// Seed the registry with standard Bridge daemon metrics.
 pub fn register_defaults(reg: &Registry) {
-    reg.gauge_set("bridge_up", "Whether the Bridge daemon is running (1=up)", 1.0, vec![]);
+    reg.gauge_set(
+        "bridge_up",
+        "Whether the Bridge daemon is running (1=up)",
+        1.0,
+        vec![],
+    );
     reg.counter_inc(
         "bridge_requests_total",
         "Total number of requests handled by the daemon",
-        0.0, vec![],
+        0.0,
+        vec![],
     );
     reg.gauge_set(
         "bridge_goroutines",
         "Current number of active handler threads",
-        0.0, vec![],
+        0.0,
+        vec![],
     );
     reg.histogram_observe(
         "bridge_request_duration_seconds",
         "Request duration in seconds",
-        0.0, vec![],
+        0.0,
+        vec![],
     );
 }
 
@@ -234,7 +303,9 @@ fn now_secs() -> u64 {
 }
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
-    if sorted.is_empty() { return 0.0; }
+    if sorted.is_empty() {
+        return 0.0;
+    }
     // Use ceiling-based nearest rank: ceil(p * n) then clamp
     let rank = (p * sorted.len() as f64).ceil() as usize;
     let idx = rank.saturating_sub(1).min(sorted.len() - 1);
@@ -242,12 +313,15 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 }
 
 fn format_labels(labels: &[(String, String)]) -> String {
-    if labels.is_empty() { return String::new(); }
+    if labels.is_empty() {
+        return String::new();
+    }
     format!("{{{}}}", format_labels_inner(labels))
 }
 
 fn format_labels_inner(labels: &[(String, String)]) -> String {
-    labels.iter()
+    labels
+        .iter()
         .map(|(k, v)| format!("{}=\"{}\"", k, v))
         .collect::<Vec<_>>()
         .join(",")
@@ -291,10 +365,15 @@ mod tests {
     #[test]
     fn prometheus_output_contains_help() {
         let reg = Registry::new();
-        reg.counter_inc("http_reqs", "HTTP requests", 5.0, vec![
-            ("method".into(), "GET".into()),
-            ("status".into(), "200".into()),
-        ]);
+        reg.counter_inc(
+            "http_reqs",
+            "HTTP requests",
+            5.0,
+            vec![
+                ("method".into(), "GET".into()),
+                ("status".into(), "200".into()),
+            ],
+        );
         let prom = reg.to_prometheus();
         assert!(prom.contains("# HELP http_reqs"));
         assert!(prom.contains("# TYPE http_reqs counter"));

@@ -437,11 +437,7 @@ mod tests {
         for i in 0..5 {
             let reg = Arc::clone(&registry);
             let handle = thread::spawn(move || {
-                let service = Service::new(
-                    format!("service_{}", i),
-                    "localhost",
-                    8000 + i as u16,
-                );
+                let service = Service::new(format!("service_{}", i), "localhost", 8000 + i as u16);
                 reg.register(service);
             });
             handles.push(handle);

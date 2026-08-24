@@ -33,7 +33,7 @@ impl Scheme {
         match self {
             Scheme::Bearer => "bearer",
             Scheme::ApiKey => "api_key",
-            Scheme::None   => "none",
+            Scheme::None => "none",
         }
     }
 }
@@ -43,23 +43,23 @@ impl Scheme {
 /// Parsed and validated auth data attached to a request.
 #[derive(Debug, Clone)]
 pub struct AuthData {
-    pub user_id:    Option<String>,
-    pub email:      Option<String>,
-    pub roles:      Vec<String>,
-    pub custom:     HashMap<String, String>,
+    pub user_id: Option<String>,
+    pub email: Option<String>,
+    pub roles: Vec<String>,
+    pub custom: HashMap<String, String>,
     pub expires_at: Option<u64>,
-    pub issued_at:  u64,
+    pub issued_at: u64,
 }
 
 impl AuthData {
     pub fn new(user_id: impl Into<String>) -> Self {
         AuthData {
-            user_id:    Some(user_id.into()),
-            email:      None,
-            roles:      Vec::new(),
-            custom:     HashMap::new(),
+            user_id: Some(user_id.into()),
+            email: None,
+            roles: Vec::new(),
+            custom: HashMap::new(),
             expires_at: None,
-            issued_at:  now_secs(),
+            issued_at: now_secs(),
         }
     }
 
@@ -84,7 +84,9 @@ impl AuthData {
     }
 
     pub fn is_expired(&self) -> bool {
-        self.expires_at.map(|exp| now_secs() >= exp).unwrap_or(false)
+        self.expires_at
+            .map(|exp| now_secs() >= exp)
+            .unwrap_or(false)
     }
 
     pub fn has_role(&self, role: &str) -> bool {
@@ -93,22 +95,30 @@ impl AuthData {
 
     pub fn to_json(&self) -> String {
         let user_id = self.user_id.as_deref().unwrap_or("");
-        let email   = self.email.as_deref().unwrap_or("");
-        let roles   = self.roles.iter()
+        let email = self.email.as_deref().unwrap_or("");
+        let roles = self
+            .roles
+            .iter()
             .map(|r| format!("\"{}\"", r))
-            .collect::<Vec<_>>().join(",");
-        let custom: String = self.custom.iter()
+            .collect::<Vec<_>>()
+            .join(",");
+        let custom: String = self
+            .custom
+            .iter()
             .map(|(k, v)| format!(",\"{}\":\"{}\"", k, v))
             .collect();
-        let exp = self.expires_at.map(|e| format!(",\"expires_at\":{e}")).unwrap_or_default();
+        let exp = self
+            .expires_at
+            .map(|e| format!(",\"expires_at\":{e}"))
+            .unwrap_or_default();
         format!(
             r#"{{"user_id":"{user_id}","email":"{email}","roles":[{roles}],"issued_at":{iat}{exp}{custom}}}"#,
             user_id = user_id,
-            email   = email,
-            roles   = roles,
-            iat     = self.issued_at,
-            exp     = exp,
-            custom  = custom,
+            email = email,
+            roles = roles,
+            iat = self.issued_at,
+            exp = exp,
+            custom = custom,
         )
     }
 }
@@ -118,9 +128,9 @@ impl AuthData {
 /// Token entry stored in the session registry.
 #[derive(Debug, Clone)]
 struct TokenEntry {
-    scheme:     Scheme,
-    raw_token:  String,
-    auth_data:  AuthData,
+    scheme: Scheme,
+    raw_token: String,
+    auth_data: AuthData,
     created_at: u64,
 }
 
@@ -129,14 +139,14 @@ struct TokenEntry {
 pub struct AuthRegistry(Arc<Mutex<RegistryInner>>);
 
 struct RegistryInner {
-    tokens:    HashMap<String, TokenEntry>, // token → entry
-    api_keys:  HashMap<String, TokenEntry>, // api_key → entry
+    tokens: HashMap<String, TokenEntry>,   // token → entry
+    api_keys: HashMap<String, TokenEntry>, // api_key → entry
 }
 
 impl AuthRegistry {
     pub fn new() -> Self {
         AuthRegistry(Arc::new(Mutex::new(RegistryInner {
-            tokens:   HashMap::new(),
+            tokens: HashMap::new(),
             api_keys: HashMap::new(),
         })))
     }
@@ -145,31 +155,37 @@ impl AuthRegistry {
     pub fn set_bearer(&self, token: impl Into<String>, data: AuthData) {
         let token = token.into();
         let mut inner = self.0.lock().unwrap();
-        inner.tokens.insert(token.clone(), TokenEntry {
-            scheme:     Scheme::Bearer,
-            raw_token:  token,
-            auth_data:  data,
-            created_at: now_secs(),
-        });
+        inner.tokens.insert(
+            token.clone(),
+            TokenEntry {
+                scheme: Scheme::Bearer,
+                raw_token: token,
+                auth_data: data,
+                created_at: now_secs(),
+            },
+        );
     }
 
     /// Register an API key with associated auth data.
     pub fn set_api_key(&self, key: impl Into<String>, data: AuthData) {
         let key = key.into();
         let mut inner = self.0.lock().unwrap();
-        inner.api_keys.insert(key.clone(), TokenEntry {
-            scheme:     Scheme::ApiKey,
-            raw_token:  key,
-            auth_data:  data,
-            created_at: now_secs(),
-        });
+        inner.api_keys.insert(
+            key.clone(),
+            TokenEntry {
+                scheme: Scheme::ApiKey,
+                raw_token: key,
+                auth_data: data,
+                created_at: now_secs(),
+            },
+        );
     }
 
     /// Validate a bearer token. Returns `AuthData` or an error string.
     pub fn validate_bearer(&self, token: &str) -> Result<AuthData, String> {
         let inner = self.0.lock().unwrap();
         match inner.tokens.get(token) {
-            None        => Err("invalid or expired token".to_string()),
+            None => Err("invalid or expired token".to_string()),
             Some(entry) => {
                 if entry.auth_data.is_expired() {
                     Err("token has expired".to_string())
@@ -184,7 +200,7 @@ impl AuthRegistry {
     pub fn validate_api_key(&self, key: &str) -> Result<AuthData, String> {
         let inner = self.0.lock().unwrap();
         match inner.api_keys.get(key) {
-            None        => Err("invalid API key".to_string()),
+            None => Err("invalid API key".to_string()),
             Some(entry) => {
                 if entry.auth_data.is_expired() {
                     Err("API key has expired".to_string())
@@ -236,7 +252,7 @@ impl AuthRegistry {
     /// Status JSON for the `auth-status` CLI command.
     pub fn status_json(&self) -> String {
         let inner = self.0.lock().unwrap();
-        let bearer_count  = inner.tokens.len();
+        let bearer_count = inner.tokens.len();
         let api_key_count = inner.api_keys.len();
         let has_auth = bearer_count > 0 || api_key_count > 0;
         format!(
@@ -246,7 +262,9 @@ impl AuthRegistry {
 }
 
 impl Default for AuthRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── Request auth extraction ───────────────────────────────────────────────────
@@ -299,14 +317,12 @@ mod tests {
 
     #[test]
     fn auth_data_expiry() {
-        let expired = AuthData::new("user-1")
-            .with_expiry(0); // already expired
-        // Sleep 1ms to ensure timestamp passes
+        let expired = AuthData::new("user-1").with_expiry(0); // already expired
+                                                              // Sleep 1ms to ensure timestamp passes
         std::thread::sleep(std::time::Duration::from_millis(10));
         assert!(expired.is_expired());
 
-        let valid = AuthData::new("user-2")
-            .with_expiry(3600);
+        let valid = AuthData::new("user-2").with_expiry(3600);
         assert!(!valid.is_expired());
     }
 
@@ -385,9 +401,7 @@ mod tests {
 
     #[test]
     fn extract_token_x_api_key() {
-        let headers = vec![
-            ("X-API-Key".to_string(), "my-key-123".to_string()),
-        ];
+        let headers = vec![("X-API-Key".to_string(), "my-key-123".to_string())];
         assert_eq!(extract_token(&headers), Some("my-key-123".to_string()));
     }
 }

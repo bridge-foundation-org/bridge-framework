@@ -252,13 +252,17 @@ impl PrometheusExporter {
             // Add HELP line
             result.push_str(&format!(
                 "# HELP {}_{} {}\n",
-                self.namespace, metric.name, metric.metric_type.as_str()
+                self.namespace,
+                metric.name,
+                metric.metric_type.as_str()
             ));
 
             // Add TYPE line
             result.push_str(&format!(
                 "# TYPE {}_{} {}\n",
-                self.namespace, metric.name, metric.metric_type.as_str()
+                self.namespace,
+                metric.name,
+                metric.metric_type.as_str()
             ));
 
             // Add metric line with labels
@@ -323,7 +327,11 @@ impl MetricsRegistry {
     }
 
     /// Register an exporter
-    pub fn register_exporter(&mut self, name: impl Into<String>, exporter: Box<dyn MetricsExporter>) {
+    pub fn register_exporter(
+        &mut self,
+        name: impl Into<String>,
+        exporter: Box<dyn MetricsExporter>,
+    ) {
         self.exporters.insert(name.into(), exporter);
     }
 
@@ -414,8 +422,8 @@ mod tests {
 
     #[test]
     fn test_metric_datapoint_with_unit() {
-        let metric = MetricDataPoint::new("latency", 50.0, MetricType::Gauge)
-            .with_unit("Milliseconds");
+        let metric =
+            MetricDataPoint::new("latency", 50.0, MetricType::Gauge).with_unit("Milliseconds");
         assert_eq!(metric.unit, "Milliseconds");
     }
 
@@ -556,7 +564,10 @@ mod tests {
     fn test_metrics_registry_multiple_exporters() {
         let mut registry = MetricsRegistry::new();
         registry.register_exporter("prometheus", Box::new(PrometheusExporter::new("bridge")));
-        registry.register_exporter("cloudwatch", Box::new(CloudWatchExporter::new("bridge", "us-east-1")));
+        registry.register_exporter(
+            "cloudwatch",
+            Box::new(CloudWatchExporter::new("bridge", "us-east-1")),
+        );
 
         let metric = MetricDataPoint::new("requests", 100.0, MetricType::Counter);
         registry.record_metric(metric);
