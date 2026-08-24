@@ -1,0 +1,13 @@
+[package]
+name = "bridge-sdk-rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "BridgeBase Rust SDK — declarative infra builder emitting the canonical bridgebase.lock.json schema"
+
+[dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+serde_json = "1"

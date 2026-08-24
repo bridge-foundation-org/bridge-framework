@@ -8,6 +8,7 @@ members = [
     "miniredis",
     "daemon",
     "cli",
+    "sdk-rust",
     "e2e-tests",
     "scripts/analyze-commits",
 ]

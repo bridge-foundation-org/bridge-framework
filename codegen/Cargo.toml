@@ -8,3 +8,4 @@ description = "TypeScript client generator: typed interfaces, path params, auth 
 
 [dependencies]
 compiler = { path = "../compiler" }
+bridge-sdk-rust = { path = "../sdk-rust" }

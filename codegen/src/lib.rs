@@ -8,6 +8,7 @@
 //! - `BridgeError` class for structured error handling
 //! - Per-service namespaced client objects
 
+use bridge_sdk_rust::{ManifestBuilder, ManifestError, ServiceSpec};
 use compiler::{Auth, BridgeFile, Endpoint, Method, Service};
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -289,6 +290,31 @@ fn root_factory(out: &mut String, file: &BridgeFile) {
     out.push_str("}\n");
 }
 
+// ── Manifest emission (goal §4 / ADR-0001) ───────────────────────────────────
+
+/// Derive a canonical infra manifest from a compiled `.bridge` file.
+///
+/// Phase-2 scope: each service becomes one deployable unit with a
+/// convention-derived OCI image (`bridge/{app}-{service}:{version}`);
+/// endpoints themselves are not infra and don't appear in the manifest.
+/// Infra primitives declared in future DSL sections (db/pubsub/storage/cron)
+/// land as `Resource`s here as the compiler surfaces them (tracked in
+/// docs/TASKS.md phase-2).
+///
+/// The output is produced by the same types the Rust SDK uses, so lock text
+/// and hashes are byte-identical across all emitters by construction.
+pub fn generate_manifest(
+    file: &BridgeFile,
+    version: &str,
+) -> Result<bridge_sdk_rust::Finalized, ManifestError> {
+    let mut b = ManifestBuilder::new("demo")?.language("ts");
+    for svc in &file.services {
+        let image = format!("bridge/demo-{0}:{version}", svc.name, version = version);
+        b = b.service(&svc.name, ServiceSpec::new(image))?;
+    }
+    b.finalize()
+}
+
 // ── String helpers ────────────────────────────────────────────────────────────
 
 /// Convert `kebab-case` or `snake_case` to `PascalCase`.
@@ -312,6 +338,92 @@ mod tests {
     use super::*;
     use compiler::{Auth, BridgeFile, Endpoint, Method, Service};
 
+    /// Mirror of the test helpers above for the manifest generator.
+    mod manifest_tests {
+        use super::*;
+        use compiler::{Auth, BridgeFile, Endpoint, Method, Service};
+
+        fn make_service(name: &str, auth: Auth, endpoints: Vec<Endpoint>) -> Service {
+            Service {
+                name: name.to_string(),
+                auth,
+                middleware: vec![],
+                endpoints,
+            }
+        }
+
+        fn make_endpoint(name: &str, method: Method, path: &str) -> Endpoint {
+            Endpoint {
+                name: name.to_string(),
+                method,
+                path: path.to_string(),
+                auth: None,
+                tags: vec![],
+            }
+        }
+
+        #[test]
+        fn manifest_from_bridge_file_is_valid_and_hashed() {
+            let file = BridgeFile {
+                services: vec![
+                    make_service(
+                        "hello",
+                        Auth::None,
+                        vec![make_endpoint("ping", Method::Get, "/ping")],
+                    ),
+                    make_service(
+                        "orders",
+                        Auth::Bearer,
+                        vec![make_endpoint("item", Method::Get, "/orders/:id")],
+                    ),
+                ],
+            };
+            let lock = generate_manifest(&file, "1.0.0").expect("manifest generates");
+            assert_eq!(lock.app(), "demo");
+            assert!(lock.verify().is_ok());
+            // Services appear in canonical (sorted) order with derived images.
+            let text = lock.to_lock();
+            assert!(text.contains("\"hello\""));
+            assert!(text.contains("\"orders\""));
+            assert!(text.contains("bridge/demo-hello:1.0.0"));
+            // Hash is stamped and stable across regeneration.
+            let again = generate_manifest(&file, "1.0.0").unwrap();
+            assert_eq!(lock.content_hash(), again.content_hash());
+        }
+
+        #[test]
+        fn manifest_rejects_non_dns_service_names() {
+            let file = BridgeFile {
+                services: vec![make_service(
+                    "Bad_Name",
+                    Auth::None,
+                    vec![make_endpoint("ping", Method::Get, "/ping")],
+                )],
+            };
+            let err = generate_manifest(&file, "1.0.0").unwrap_err();
+            assert!(err.to_string().contains("DNS label"), "{err}");
+        }
+
+        #[test]
+        fn manifest_empty_file_yields_valid_empty_doc() {
+            let file = BridgeFile { services: vec![] };
+            let lock = generate_manifest(&file, "2.0.0").expect("empty ok");
+            assert!(lock.verify().is_ok());
+        }
+
+        #[test]
+        fn manifest_image_tag_tracks_version() {
+            let file = BridgeFile {
+                services: vec![make_service(
+                    "api",
+                    Auth::None,
+                    vec![make_endpoint("ping", Method::Get, "/ping")],
+                )],
+            };
+            let v099 = generate_manifest(&file, "0.99.0").unwrap();
+            assert!(v099.to_lock().contains("bridge/demo-api:0.99.0"));
+        }
+    }
     fn make_service(name: &str, auth: Auth, endpoints: Vec<Endpoint>) -> Service {
         Service {
             name: name.to_string(),
