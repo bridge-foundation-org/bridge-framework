@@ -1,6 +1,10 @@
 //! Bridge CLI — `bridge <command> [args]`
 //!
 //! Talks to the daemon over TCP. Some commands (init, completions) run locally.
+//!
+//! DEPRECATED as a standalone binary: the BridgeBase CLI now lives in
+//! `bridgebase-cli` (installed via `@bridgebase/cli`). This binary remains for
+//! in-repo daemon tests only and prints a pointer on every invocation.
 
 use std::env;
 use std::fs;
@@ -12,6 +16,14 @@ use protocol::encode;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:7878";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// One-time notice per invocation: this binary is superseded by the
+/// standalone BridgeBase CLI (ADR-0004 / migrate-cli mapping).
+fn print_deprecation() {
+    eprintln!(
+        "note: this merged-in `bridge` binary is deprecated; install the standalone CLI with `npm i -g @bridgebase/cli`, or run `bridge migrate-cli` from it"
+    );
+}
 
 // ── ANSI colors (no external deps) ───────────────────────────────────────────
 
@@ -57,6 +69,7 @@ fn dim(s: &str) -> String {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
+    print_deprecation();
     let raw_args: Vec<String> = env::args().skip(1).collect();
     let json_out = raw_args.iter().any(|a| a == "--json");
     let args: Vec<String> = raw_args.into_iter().filter(|a| a != "--json").collect();
