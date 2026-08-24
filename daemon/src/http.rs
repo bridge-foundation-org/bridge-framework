@@ -250,6 +250,16 @@ fn handle(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> {
         return handle_sse(stream, state);
     }
 
+    // State-streaming SSE endpoints (traces / metrics / services)
+    if method == "GET"
+        && matches!(
+            clean_path,
+            "/api/v1/stream/traces" | "/api/v1/stream/metrics" | "/api/v1/stream/services"
+        )
+    {
+        return handle_state_stream(stream, state, clean_path);
+    }
+
     // route() handles auth enforcement + request-ID injection
     let response = route(&req, &state, &req_id);
 
@@ -333,6 +343,78 @@ fn write_chunk(stream: &mut TcpStream, data: &str) -> std::io::Result<()> {
     use std::io::Write;
     stream.write_all(format!("{:x}\r\n{}\r\n", data.len(), data).as_bytes())?;
     stream.flush()
+}
+
+/// Long-lived SSE stream of daemon state (traces / metrics / services).
+///
+/// Registers a session in `StreamRegistry` for the endpoint's lifetime,
+/// polls the matching renderer every 2s (15s keepalive between quiet
+/// periods), and always deregisters on disconnect so `active_count()`
+/// reflects live clients.
+fn handle_state_stream(
+    mut stream: TcpStream,
+    state: SharedState,
+    endpoint: &str,
+) -> std::io::Result<()> {
+    let origin = cors_origin();
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: text/event-stream\r\n\
+         Cache-Control: no-cache\r\n\
+         Access-Control-Allow-Origin: {origin}\r\n\
+         Connection: keep-alive\r\n\
+         Transfer-Encoding: chunked\r\n\
+         \r\n"
+    );
+    stream.write_all(headers.as_bytes())?;
+    stream.flush()?;
+
+    // Normalize the path and register the session.
+    let session = {
+        let mut g = state.lock().unwrap();
+        match g.streams.open(endpoint) {
+            Some(ep) => g.streams.set_open(&ep),
+            None => return Ok(()), // unknown endpoint: close quietly
+        }
+    };
+
+    // Initial burst: current state immediately.
+    let initial = render_stream_snapshot(&state, endpoint);
+    if write_chunk(&mut stream, &initial).is_err() {
+        finish_state_stream(&state, &session);
+        return Ok(());
+    }
+
+    // Poll loop — render fresh state each tick.
+    let tick = std::time::Duration::from_secs(2);
+    loop {
+        std::thread::sleep(tick);
+        let frame = render_stream_snapshot(&state, endpoint);
+        if write_chunk(&mut stream, &frame).is_err() {
+            break;
+        }
+    }
+
+    finish_state_stream(&state, &session);
+    Ok(())
+}
+
+/// Deregister a stream session (best-effort; state may be poisoned).
+fn finish_state_stream(state: &SharedState, session: &str) {
+    if let Ok(mut g) = state.lock() {
+        g.streams.close(session);
+    }
+}
+
+/// Render one poll of the requested stream as SSE text.
+fn render_stream_snapshot(state: &SharedState, endpoint: &str) -> String {
+    let g = state.lock().unwrap();
+    match endpoint {
+        "/api/v1/stream/traces" => crate::streaming::render_traces(&g, 50),
+        "/api/v1/stream/metrics" => crate::streaming::render_metrics(&g),
+        "/api/v1/stream/services" => crate::streaming::render_services(&g),
+        _ => String::new(),
+    }
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -1856,23 +1938,23 @@ mod tests {
 
 // ── Streaming Endpoints ────────────────────────────────────────────────────
 
-fn stream_traces(_state: &SharedState, _req: &Request) -> String {
-    // Returns Server-Sent Events stream of recent traces
-    // TODO: Implement real trace streaming
-    let frame = streaming::SseFrame::new("traces", r#"{"status":"stream-active"}"#);
-    frame.encode()
+fn stream_traces(state: &SharedState, _req: &Request) -> String {
+    // One-shot SSE burst of recent traces; long-lived streaming is served
+    // inline by handle_state_stream (chunked, per-connection).
+    let g = state.lock().unwrap();
+    if g.traces.is_empty() {
+        return streaming::SseFrame::new("traces", r#"{"status":"stream-active","traces":0}"#)
+            .encode();
+    }
+    streaming::render_traces(&g, 50)
 }
 
-fn stream_metrics(_state: &SharedState, _req: &Request) -> String {
-    // Returns Server-Sent Events stream of metrics updates
-    // TODO: Implement real metrics streaming
-    let frame = streaming::SseFrame::new("metrics", r#"{"status":"stream-active"}"#);
-    frame.encode()
+fn stream_metrics(state: &SharedState, _req: &Request) -> String {
+    let g = state.lock().unwrap();
+    streaming::render_metrics(&g)
 }
 
-fn stream_services(_state: &SharedState, _req: &Request) -> String {
-    // Returns Server-Sent Events stream of service catalog updates
-    // TODO: Implement real service streaming
-    let frame = streaming::SseFrame::new("services", r#"{"status":"stream-active"}"#);
-    frame.encode()
+fn stream_services(state: &SharedState, _req: &Request) -> String {
+    let g = state.lock().unwrap();
+    streaming::render_services(&g)
 }

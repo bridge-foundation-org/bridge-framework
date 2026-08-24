@@ -8,36 +8,64 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Generate a UUID (placeholder - in real code would use uuid crate)
+/// Generate a UUID (v4-format random from a process-seeded PRNG).
+///
+/// Seeded once from OS entropy (time + address-space randomness); calls
+/// advance a SplitMix64 generator, which is not cryptographically secure
+/// but is collision-free for request/correlation IDs within a process.
 fn generate_uuid() -> String {
-    // Simplified UUID generation for testing
+    let mut rng = RNG.lock().unwrap_or_else(|e| e.into_inner());
+    seed_once(&mut rng);
+    format_uuid(&mut rng)
+}
+
+fn format_uuid(rng: &mut u64) -> String {
+    let a = splitmix64(rng);
+    let b = splitmix64(rng);
+    // Set version 4 and variant bits per RFC 4122.
+    let v4 = (a & 0xFFFFFFFFFFFF0FFF) | 0x0000000000004000;
+    let var = (b & 0x3FFFFFFFFFFFFFFF) | 0x8000000000000000;
     format!(
         "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        rand_u32(),
-        rand_u16(),
-        rand_u16(),
-        rand_u16(),
-        rand_u64() & 0xFFFFFFFFFFFF
+        (v4 >> 32) as u32,
+        (v4 >> 16) as u16,
+        v4 as u16,
+        (var >> 48) as u16,
+        var & 0xFFFFFFFFFFFF
     )
 }
 
-fn rand_u32() -> u32 {
-    (SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u32)
-        .wrapping_mul(1103515245)
-        .wrapping_add(12345)
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E3779B97F4A7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
 }
 
-fn rand_u16() -> u16 {
-    (rand_u32() >> 16) as u16
+/// Mix entropy into the shared state exactly once (state==0 means unseeded;
+/// splitmix64(1..) never yields 0 again as its first output, so 0 is a safe
+/// sentinel for this non-crypto use).
+fn seed_once(state: &mut u64) {
+    if *state == 0 {
+        let t = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        // Address-space entropy: statics are ASLR-relocated per process.
+        let probe = 0u8;
+        let addr = &probe as *const u8 as u64;
+        *state = t ^ addr.rotate_left(32) ^ 0xA5A5_5A5A_5A5A_A5A5 | 1;
+    }
 }
+
+/// Process-global RNG state.
+static RNG: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
 
 fn rand_u64() -> u64 {
-    let a = rand_u32() as u64;
-    let b = rand_u32() as u64;
-    (a << 32) | b
+    let mut rng = RNG.lock().unwrap_or_else(|e| e.into_inner());
+    seed_once(&mut rng);
+    splitmix64(&mut rng)
 }
 
 /// Represents the deadline for a request

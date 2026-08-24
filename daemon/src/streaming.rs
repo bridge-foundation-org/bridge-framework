@@ -196,60 +196,168 @@ impl Clone for StreamBuffer {
     }
 }
 
-pub struct StreamRegistry;
+// ── Streaming Endpoint Registry ────────────────────────────────────────────
+//
+// Tracks the catalog of streamable endpoints and their live sessions.
+// An "endpoint" is a known SSE path; a "session" is one connected client.
+// Sessions are opened by HTTP handlers (`handle_sse_*` in http.rs) and
+// closed on disconnect, so `active_count()` reflects reality.
+
+/// Known streaming endpoints served by the daemon.
+pub const STREAM_ENDPOINTS: &[(&str, &str)] = &[
+    ("/api/v1/stream/traces", "request trace events"),
+    ("/api/v1/stream/metrics", "metrics snapshots"),
+    ("/api/v1/stream/services", "service catalog updates"),
+];
+
+#[derive(Default)]
+pub struct StreamRegistry {
+    /// Live session IDs per endpoint path.
+    active: std::collections::HashMap<String, Vec<String>>,
+    /// Monotonic session counter.
+    counter: u64,
+}
 
 impl StreamRegistry {
     pub fn new() -> Self {
-        StreamRegistry
+        Self::default()
     }
 
+    /// Catalog JSON: known endpoints plus per-endpoint active session counts.
     pub fn endpoints_json(&self) -> String {
-        r#"{"endpoints":[],"count":0}"#.into()
+        let eps: Vec<String> = STREAM_ENDPOINTS
+            .iter()
+            .map(|(path, desc)| {
+                let n = self.active.get(*path).map(|v| v.len()).unwrap_or(0);
+                format!(r#"{{"path":"{path}","description":"{desc}","active":{n}}}"#)
+            })
+            .collect();
+        let total: usize = self.active.values().map(|v| v.len()).sum();
+        format!(
+            r#"{{"endpoints":[{}],"count":{},"active":{}}}"#,
+            eps.join(","),
+            STREAM_ENDPOINTS.len(),
+            total
+        )
     }
 
+    /// Number of currently-open stream sessions across all endpoints.
     pub fn active_count(&self) -> u32 {
-        0
+        self.active.values().map(|v| v.len() as u32).sum()
     }
 
-    pub fn open(&self, _path: &str) -> Option<String> {
-        None // No streaming endpoints implemented yet
+    /// Look up an endpoint by path. Returns its canonical path when known,
+    /// so callers can normalize before opening a session.
+    pub fn open(&self, path: &str) -> Option<String> {
+        STREAM_ENDPOINTS
+            .iter()
+            .find(|(p, _)| *p == path || path.trim_end_matches('/') == *p)
+            .map(|(p, _)| p.to_string())
     }
 
-    pub fn set_open(&mut self, _id: &str) {
-        // TODO: Implement
+    /// Register a live session on an endpoint; returns the session ID.
+    pub fn set_open(&mut self, endpoint_path: &str) -> String {
+        self.counter += 1;
+        let id = format!("s{:06}", self.counter);
+        self.active
+            .entry(endpoint_path.to_string())
+            .or_default()
+            .push(id.clone());
+        id
     }
 
-    pub fn close(&mut self, _id: &str) {
-        // TODO: Implement
+    /// Remove a session by ID from whichever endpoint holds it.
+    pub fn close(&mut self, id: &str) -> bool {
+        for sessions in self.active.values_mut() {
+            if let Some(pos) = sessions.iter().position(|s| s == id) {
+                sessions.remove(pos);
+                return true;
+            }
+        }
+        false
     }
 }
 
-impl Default for StreamRegistry {
-    fn default() -> Self {
-        Self::new()
+// ── Streaming Snapshot Renderers ───────────────────────────────────────
+//
+// One-shot renders of daemon state as SSE frames. The HTTP layer polls
+// these on an interval while a client stays connected, so each function
+// is pure state → text with no I/O.
+
+use crate::state::State;
+
+/// Recent traces as SSE frames (oldest first), capped at `count`.
+pub fn render_traces(state: &State, count: usize) -> String {
+    let recent: Vec<&crate::state::TraceEntry> = state.traces.iter().rev().take(count).collect();
+    let mut out = String::new();
+    for t in recent.iter().rev() {
+        let frame = SseFrame::new("trace", &t.to_json()).with_id(t.id.clone());
+        out.push_str(&frame.encode());
     }
+    out
 }
 
-// ── Streaming Endpoint Handlers ────────────────────────────────────────────
-
-pub fn stream_traces_sse(count: usize) -> String {
-    // This would be called from http.rs
-    // Stream recent traces as SSE events
-    let mut output = String::from("data: Connected to trace stream\n\n");
-    // Add more events as needed
-    output
+/// Current metrics snapshot as a single SSE frame.
+pub fn render_metrics(state: &State) -> String {
+    // Aggregate latency stats from per-endpoint totals.
+    let total_dur: u64 = state.metrics.duration_totals.values().sum();
+    let total_req = state.metrics.total_requests.max(1);
+    let avg_ms = total_dur / total_req;
+    let success_rate = 100.0f32 - (state.metrics.total_errors as f32 / total_req as f32 * 100.0);
+    let data = format!(
+        r#"{{"requests_total":{req},"errors_total":{err},"avg_ms":{avg_ms},"success_rate":{sr:.2},"sample_rate":{sample}}}"#,
+        req = state.metrics.total_requests,
+        err = state.metrics.total_errors,
+        sr = success_rate.clamp(0.0, 100.0),
+        sample = state.trace_sample_rate,
+    );
+    SseFrame::new("metrics", &data).encode()
 }
 
-pub fn stream_metrics_sse() -> String {
-    // Stream metrics updates
-    let frame = SseFrame::new("metrics", r#"{"status":"ok"}"#);
-    frame.encode()
+/// Service catalog as SSE frames, one per service plus a summary frame.
+pub fn render_services(state: &State) -> String {
+    let mut out = String::new();
+    if let Some(file) = &state.service_registry {
+        for svc in &file.services {
+            let auth = match svc.auth {
+                compiler::Auth::None => "none",
+                compiler::Auth::Bearer => "bearer",
+                compiler::Auth::ApiKey => "api-key",
+            };
+            let data = format!(
+                r#"{{"name":{},"endpoints":{},"auth":"{auth}"}}"#,
+                json_str(&svc.name),
+                svc.endpoints.len()
+            );
+            out.push_str(
+                &SseFrame::new("service", &data)
+                    .with_id(svc.name.clone())
+                    .encode(),
+            );
+        }
+        let summary = format!(r#"{{"services":{}}}"#, file.services.len());
+        out.push_str(&SseFrame::new("services", &summary).encode());
+    } else {
+        out.push_str(&SseFrame::new("services", r#"{"services":0}"#).encode());
+    }
+    out
 }
 
-pub fn stream_services_sse(count: usize) -> String {
-    // Stream service updates
-    let frame = SseFrame::new("services", r#"{"status":"ok","count":0}"#);
-    frame.encode()
+/// Minimal JSON string escaping for identifiers we interpolate.
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -303,5 +411,81 @@ mod tests {
         assert!(encoded.contains("data: line1"));
         assert!(encoded.contains("data: line2"));
         assert!(encoded.contains("data: line3"));
+    }
+
+    // ── StreamRegistry ─────────────────────────────────────────────────────
+
+    #[test]
+    fn registry_catalog_lists_known_endpoints() {
+        let r = StreamRegistry::new();
+        let json = r.endpoints_json();
+        assert!(json.contains("/api/v1/stream/traces"));
+        assert!(json.contains("/api/v1/stream/metrics"));
+        assert!(json.contains("/api/v1/stream/services"));
+        assert!(json.contains(r#""count":3"#));
+    }
+
+    #[test]
+    fn registry_open_normalizes_known_paths() {
+        let r = StreamRegistry::new();
+        assert_eq!(
+            r.open("/api/v1/stream/traces").as_deref(),
+            Some("/api/v1/stream/traces")
+        );
+        assert_eq!(
+            r.open("/api/v1/stream/metrics/").as_deref(),
+            Some("/api/v1/stream/metrics")
+        );
+        assert_eq!(r.open("/api/v1/nope"), None);
+    }
+
+    #[test]
+    fn registry_sessions_track_lifecycle() {
+        let mut r = StreamRegistry::new();
+        let ep = r.open("/api/v1/stream/traces").unwrap();
+        let s1 = r.set_open(&ep);
+        let s2 = r.set_open(&ep);
+        assert_eq!(r.active_count(), 2);
+        // Catalog reflects per-endpoint counts.
+        assert!(r.endpoints_json().contains(r#""active":2"#));
+        // Closing an unknown id is a no-op returning false.
+        assert!(!r.close("s000000"));
+        // Closing known ids works and empties the endpoint.
+        assert!(r.close(&s1));
+        assert!(r.close(&s2));
+        assert_eq!(r.active_count(), 0);
+    }
+
+    #[test]
+    fn render_metrics_reflects_state() {
+        let mut state = crate::state::State::new(None, None);
+        state.push_trace("GET", "/a", 200, 10);
+        state.push_trace("GET", "/b", 500, 30);
+        let frame = render_metrics(&state);
+        assert!(frame.contains("event: metrics"));
+        assert!(frame.contains(r#""requests_total":2"#));
+        assert!(frame.contains(r#""errors_total":1"#));
+    }
+
+    #[test]
+    fn render_traces_emits_recent_first_capped() {
+        let mut state = crate::state::State::new(None, None);
+        for i in 0..5 {
+            state.push_trace("GET", &format!("/p{i}"), 200, i);
+        }
+        let out = render_traces(&state, 3);
+        // Capped at 3 frames.
+        assert_eq!(out.matches("event: trace").count(), 3);
+        // Newest last (SSE replay order): p4 must appear after p3.
+        let p3 = out.find("/p3").expect("p3 present");
+        let p4 = out.find("/p4").expect("p4 present");
+        assert!(p3 < p4, "traces must stream oldest-first");
+    }
+
+    #[test]
+    fn render_services_without_registry_is_empty_catalog() {
+        let state = crate::state::State::new(None, None);
+        let out = render_services(&state);
+        assert!(out.contains(r#"{"services":0}"#));
     }
 }
