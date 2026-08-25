@@ -90,6 +90,22 @@ pub struct WatchConfig {
     pub files: Vec<String>,
 }
 
+/// Defaults for the in-memory cache keyspaces (commit 2073-2074).
+#[derive(Debug, Clone)]
+pub struct CacheConfig {
+    pub max_entries: usize,
+    pub default_ttl_ms: u64,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        CacheConfig {
+            max_entries: 10_000,
+            default_ttl_ms: 300_000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MiddlewareRule {
     pub name: String,
@@ -114,6 +130,8 @@ pub struct BridgeConfig {
     pub watch: WatchConfig,
     pub middleware: Vec<MiddlewareRule>,
     pub ratelimit: Vec<RateLimitRule>,
+    /// In-memory cache defaults (commit 2073-2074).
+    pub cache: CacheConfig,
 }
 
 impl BridgeConfig {
@@ -153,6 +171,8 @@ impl BridgeConfig {
         let mut section = String::new();
         let mut cur_mw: Option<MiddlewareRule> = None;
         let mut cur_rl: Option<RateLimitRule> = None;
+
+        cfg.cache = CacheConfig::default();
 
         for (lineno, raw_line) in content.lines().enumerate() {
             let lineno = lineno + 1;
@@ -218,6 +238,11 @@ impl BridgeConfig {
                     "dirs" => cfg.watch.dirs = parse_str_array(val),
                     "files" => cfg.watch.files = parse_str_array(val),
                     other => return Err(format!("line {lineno}: unknown key [watch].{other}")),
+                },
+                "cache" => match key {
+                    "max_entries" => cfg.cache.max_entries = parse_u64(val, lineno)? as usize,
+                    "default_ttl_ms" => cfg.cache.default_ttl_ms = parse_u64(val, lineno)?,
+                    other => return Err(format!("line {lineno}: unknown key [cache].{other}")),
                 },
                 "middleware.rules" => {
                     let mw = cur_mw.get_or_insert_with(MiddlewareRule::default);
@@ -293,7 +318,14 @@ poll_ms = 500
 dirs    = ["."]                # directories to scan for .bridge files
 files   = ["app.bridge"]       # explicit files to watch
 
-# ── Middleware ─────────────────────────────────────────────────────────────────
+# ── Cache (in-memory keyspaces) ─────────────────────────────────────────────
+# Defaults applied when a keyspace does not override them.
+
+[cache]
+max_entries     = 10000
+default_ttl_ms  = 300000   # 5 minutes; 0 = entries never expire by default
+
+# ── Middleware ────────────────────────────────────────────────────────────────
 # Each [[middleware.rules]] entry registers one middleware hook.
 # Supported before specs: log | reject:<status>:<message>
 # Supported after  specs: log | header:<key>:<value>
@@ -406,6 +438,16 @@ pub fn apply(cfg: &BridgeConfig, state: &crate::state::SharedState) {
         g.rate_limiter
             .add_rule(key, rl_rule.capacity, rl_rule.refill_rate);
     }
+
+    // Cache defaults (commit 2073-2074): pre-seed the "default" keyspace so
+    // ad-hoc sets inherit [cache] limits without an explicit declaration.
+    g.cache.ensure_keyspace(
+        "default",
+        crate::cache::KeyspaceConfig {
+            max_entries: cfg.cache.max_entries,
+            default_ttl_ms: cfg.cache.default_ttl_ms,
+        },
+    );
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -503,6 +545,28 @@ mod tests {
         assert_eq!(cfg.daemon.http_addr, "0.0.0.0:9090");
         assert_eq!(cfg.daemon.tcp_addr, "0.0.0.0:9091");
         assert_eq!(cfg.daemon.mode, "lite");
+    }
+
+    // ── [cache] ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cache_section_parsed() {
+        let cfg = parse("[cache]\nmax_entries = 42\ndefault_ttl_ms = 60000\n");
+        assert_eq!(cfg.cache.max_entries, 42);
+        assert_eq!(cfg.cache.default_ttl_ms, 60_000);
+    }
+
+    #[test]
+    fn cache_section_defaults_when_absent() {
+        let cfg = parse("[project]\nname = \"x\"\n");
+        assert_eq!(cfg.cache.max_entries, 10_000);
+        assert_eq!(cfg.cache.default_ttl_ms, 300_000);
+    }
+
+    #[test]
+    fn cache_section_rejects_unknown_key() {
+        let err = BridgeConfig::parse("[cache]\nbogus = 1\n").unwrap_err();
+        assert!(err.contains("unknown key [cache].bogus"), "got: {err}");
     }
 
     // ── [watch] ───────────────────────────────────────────────────────────────

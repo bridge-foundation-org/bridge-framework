@@ -748,6 +748,23 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("POST", "/api/v1/pubsub/nack") => pubsub_nack(req, state),
         ("GET", p) if p.starts_with("/api/v1/pubsub/dlq/") => pubsub_dlq(state, &req.path),
 
+        // ── Cache keyspaces (Encore RedisCluster in-memory mode) ──────
+        ("GET", "/api/v1/cache") => cache_status(state),
+        ("GET", "/api/v1/cache/keyspaces") => cache_keyspace_list(state),
+        ("POST", "/api/v1/cache/keyspaces") => cache_keyspace_ensure(req, state),
+        ("GET", "/api/v1/cache/keyspaces/entries") => cache_entries_all(state),
+        ("GET", p) if p.starts_with("/api/v1/cache/keyspaces/") => {
+            cache_keyspace_info(state, &req.path)
+        }
+        ("DELETE", p) if p.starts_with("/api/v1/cache/keyspaces/") => {
+            cache_invalidate(req, state, &req.path)
+        }
+        ("GET", p) if p.starts_with("/api/v1/cache/entry/") => cache_get(state, &req.path),
+        ("PUT", p) if p.starts_with("/api/v1/cache/entry/") => cache_put(req, state, &req.path),
+        ("DELETE", p) if p.starts_with("/api/v1/cache/entry/") => cache_del(state, &req.path),
+        ("POST", "/api/v1/cache/mget") => cache_mget(req, state),
+        ("POST", "/api/v1/cache/mset") => cache_mset(req, state),
+
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
     }
@@ -990,7 +1007,21 @@ fn extract_json_field(json: &str, field: &str) -> Option<String> {
     let rest = rest.strip_prefix(':')?.trim_start();
     if rest.starts_with('"') {
         let inner = &rest[1..];
-        let end = inner.find('"')?;
+        // Scan to the closing quote, honoring backslash escapes so
+        // values like "{\"a\":1}" survive instead of truncating at \".
+        let bytes = inner.as_bytes();
+        let mut end = inner.len();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' => i += 2, // skip the escaped character
+                b'"' => {
+                    end = i;
+                    break;
+                }
+                _ => i += 1,
+            }
+        }
         Some(inner[..end].to_string())
     } else {
         // non-string value — take until , or }
@@ -1519,6 +1550,105 @@ fn extract_json_object(json: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Extract the full array literal following `"key": [ ... ]` (balanced
+/// brackets, string-aware). Returns the inner text between the brackets.
+fn extract_json_array(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let pos = json.find(&needle)?;
+    let rest = json[pos + needle.len()..].trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    if !rest.starts_with('[') {
+        return None;
+    }
+    let start = json.len() - rest.len();
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut prev_esc = false;
+    for (i, c) in json[start..].char_indices() {
+        match c {
+            '"' if !prev_esc => in_str = !in_str,
+            '[' if !in_str => depth += 1,
+            ']' if !in_str => {
+                depth -= 1;
+                if depth == 0 {
+                    // Inner slice between the outermost brackets.
+                    return Some(json[start + 1..start + i].to_string());
+                }
+            }
+            _ => {}
+        }
+        prev_esc = c == '\\' && !prev_esc;
+    }
+    None
+}
+
+/// Parse a flat `{ "k": "v", ... }` inner text into (key, value) pairs.
+/// String-aware: values may contain escaped quotes and commas inside
+/// strings — unlike [`parse_flat_json_object`], which splits naively.
+fn parse_string_pairs(inner: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    let bytes = inner.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Read one `"key":value` unit.
+        if bytes[i] != b'"' {
+            i += 1;
+            continue;
+        }
+        let key_start = i + 1;
+        let mut j = key_start;
+        while j < bytes.len() && bytes[j] != b'"' {
+            j += if bytes[j] == b'\\' { 2 } else { 1 };
+        }
+        if j >= bytes.len() {
+            break;
+        }
+        let key = inner[key_start..j].to_string();
+        i = j + 1;
+        // Skip to ':' then read the value token.
+        while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b':') {
+            i += 1;
+        }
+        let val_start = i;
+        if i < bytes.len() && bytes[i] == b'"' {
+            // Quoted string value — honor escapes.
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                } else if bytes[i] == b'"' {
+                    i += 1;
+                    break;
+                } else {
+                    i += 1;
+                }
+            }
+        } else {
+            while i < bytes.len() && bytes[i] != b',' && bytes[i] != b'}' {
+                i += 1;
+            }
+        }
+        let raw = inner[val_start..i.min(inner.len())].trim();
+        if !key.is_empty() {
+            pairs.push((key, raw.to_string()));
+        }
+        // Advance past the separating comma.
+        while i < bytes.len() && bytes[i] != b',' {
+            i += 1;
+        }
+        i += 1;
+    }
+    pairs
+}
+/// Parse a flat `[ "a", "b", ... ]` inner text into strings.
+/// Non-string elements are skipped (cache keys are always strings).
+fn parse_string_array(inner: &str) -> Vec<String> {
+    inner
+        .split(',')
+        .map(|item| item.trim().trim_matches('"').to_string())
+        .filter(|s| !s.is_empty() || inner.contains("\"\""))
+        .collect()
+}
 /// Parse a flat `{ "k": "v", ... }` object into pairs.
 fn parse_flat_json_object(obj: &str) -> Vec<(String, String)> {
     let inner = obj.trim().trim_start_matches('{').trim_end_matches('}');
@@ -2234,6 +2364,227 @@ fn pubsub_dlq(state: &SharedState, full_path: &str) -> String {
     };
     let g = state.lock().unwrap();
     ok(&g.pubsub.dlq_messages_json(&topic, &subscriber))
+}
+
+// ── Cache keyspaces (Encore RedisCluster in-memory mode) ─────────────────────
+
+fn cache_status(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.cache.status_json())
+}
+
+fn cache_keyspace_list(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.cache.list_json())
+}
+
+/// Declare a keyspace. Body:
+/// `{"name":"sessions","max_entries":1000,"default_ttl_ms":300000}` —
+/// only `name` is required.
+fn cache_keyspace_ensure(req: &Request, state: &SharedState) -> String {
+    let name = extract_json_field(req.body.trim(), "name").unwrap_or_default();
+    if name.is_empty() {
+        return bad_request("keyspace name required");
+    }
+    let cfg = crate::cache::KeyspaceConfig {
+        max_entries: extract_json_field(&req.body, "max_entries")
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(10_000),
+        default_ttl_ms: extract_json_field(&req.body, "default_ttl_ms")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(300_000),
+    };
+    state.lock().unwrap().cache.ensure_keyspace(&name, cfg);
+    ok(&format!(
+        r#"{{"message":"keyspace ready","name":"{name}"}}"#
+    ))
+}
+
+/// GET /api/v1/cache/keyspaces/{ks} → config + stats;
+/// GET /api/v1/cache/keyspaces/entries → live entries of every keyspace.
+fn cache_keyspace_info(state: &SharedState, full_path: &str) -> String {
+    let path_no_q = full_path.split('?').next().unwrap_or(full_path);
+    let ks = path_no_q
+        .strip_prefix("/api/v1/cache/keyspaces/")
+        .unwrap_or("");
+    if ks.is_empty() {
+        return bad_request("keyspace required");
+    }
+    let query = full_path.split('?').nth(1).unwrap_or("");
+    let want_entries = query.split('&').any(|p| p == "entries=1");
+    let g = state.lock().unwrap();
+    if want_entries {
+        return match g.cache.entries_json(ks) {
+            Some(j) => ok(&j),
+            None => json_response(404, &format!(r#"{{"error":"keyspace {ks} not found"}}"#)),
+        };
+    }
+    match g.cache.keyspace_json(ks) {
+        Some(j) => ok(&j),
+        None => json_response(404, &format!(r#"{{"error":"keyspace {ks} not found"}}"#)),
+    }
+}
+
+fn cache_entries_all(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.cache.entries_all_json())
+}
+
+/// DELETE /api/v1/cache/keyspaces/{ks}?pattern=user:*  (or ?all=1).
+/// Returns how many live entries were invalidated.
+fn cache_invalidate(req: &Request, state: &SharedState, full_path: &str) -> String {
+    let path_no_q = full_path.split('?').next().unwrap_or(full_path);
+    let query = full_path.split('?').nth(1).unwrap_or("");
+    let ks = path_no_q
+        .strip_prefix("/api/v1/cache/keyspaces/")
+        .unwrap_or("");
+    if ks.is_empty() {
+        return bad_request("keyspace required");
+    }
+    let pattern = query
+        .split('&')
+        .find(|p| p.starts_with("pattern="))
+        .map(|p| percent_decode(p.trim_start_matches("pattern=")));
+    let mut g = state.lock().unwrap();
+    if !g.cache.has_keyspace(ks) {
+        return json_response(404, &format!(r#"{{"error":"keyspace {ks} not found"}}"#));
+    }
+    let n = match pattern {
+        Some(p) => g.cache.invalidate_pattern(ks, &p),
+        None => g.cache.invalidate_all(ks),
+    };
+    drop(g);
+    ok(&format!(
+        r#"{{"message":"invalidated","keyspace":"{ks}","entries":{n}}}"#
+    ))
+}
+
+/// GET /api/v1/cache/entry/{ks}/{key} — 200 with the entry, or 404 when
+/// the key is unknown/expired (misses are still counted in stats).
+fn cache_get(state: &SharedState, full_path: &str) -> String {
+    let path_no_q = full_path.split('?').next().unwrap_or(full_path);
+    let rest = path_no_q.strip_prefix("/api/v1/cache/entry/").unwrap_or("");
+    let Some((ks, key)) = rest.split_once('/') else {
+        return bad_request("keyspace and key required");
+    };
+    if ks.is_empty() || key.is_empty() {
+        return bad_request("keyspace and key required");
+    }
+    let mut g = state.lock().unwrap();
+    let key_decoded = percent_decode(key);
+    match g.cache.get_json(ks, &key_decoded) {
+        Some(entry_json) => ok(&entry_json),
+        None => json_response(
+            404,
+            &format!(
+                r#"{{"error":"cache miss","keyspace":"{ks}","key":"{k}"}}"#,
+                k = key_decoded
+            ),
+        ),
+    }
+}
+
+/// PUT /api/v1/cache/entry/{ks}/{key}  Body: any JSON value (stored as-is).
+/// Query: `?ttl_ms=N` overrides the keyspace default (0 = never expires).
+fn cache_put(req: &Request, state: &SharedState, full_path: &str) -> String {
+    let (path_no_q, query) = match full_path.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (full_path, ""),
+    };
+    let rest = path_no_q.strip_prefix("/api/v1/cache/entry/").unwrap_or("");
+    let Some((ks, key)) = rest.split_once('/') else {
+        return bad_request("keyspace and key required");
+    };
+    if ks.is_empty() || key.is_empty() {
+        return bad_request("keyspace and key required");
+    }
+    let value = req.body.trim();
+    if value.is_empty() {
+        return bad_request("body required (any JSON value)");
+    }
+    let ttl_ms = query
+        .split('&')
+        .find(|p| p.starts_with("ttl_ms="))
+        .and_then(|p| p.trim_start_matches("ttl_ms=").parse::<u64>().ok());
+    let key = percent_decode(key);
+    let evicted = state.lock().unwrap().cache.set(ks, &key, value, ttl_ms);
+    ok(&format!(
+        r#"{{"message":"cached","keyspace":"{ks}","key":"{key}","evicted":{evicted}}}"#
+    ))
+}
+
+/// DELETE /api/v1/cache/entry/{ks}/{key} — removes one key.
+/// DELETE /api/v1/cache/entry/{ks}/{key}?pattern=... is rejected; use the
+/// keyspace-level invalidate endpoint for patterns.
+fn cache_del(state: &SharedState, full_path: &str) -> String {
+    let path_no_q = full_path.split('?').next().unwrap_or(full_path);
+    let rest = path_no_q.strip_prefix("/api/v1/cache/entry/").unwrap_or("");
+    let Some((ks, key)) = rest.split_once('/') else {
+        return bad_request("keyspace and key required");
+    };
+    if ks.is_empty() || key.is_empty() {
+        return bad_request("keyspace and key required");
+    }
+    let deleted = state.lock().unwrap().cache.del(ks, &percent_decode(key));
+    if deleted {
+        ok(r#"{"message":"deleted"}"#)
+    } else {
+        json_response(404, r#"{"error":"cache miss"}"#)
+    }
+}
+
+/// POST /api/v1/cache/mget  Body: `{"keyspace":"ks","keys":["a","b"]}`
+fn cache_mget(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let ks = extract_json_field(body, "keyspace").unwrap_or_default();
+    if ks.is_empty() {
+        return bad_request("keyspace required");
+    }
+    let Some(keys_json) = extract_json_array(body, "keys") else {
+        return bad_request("keys array required");
+    };
+    let keys = parse_string_array(&keys_json);
+    let mut g = state.lock().unwrap();
+    let items: Vec<String> = g
+        .cache
+        .mget(&ks, &keys)
+        .iter()
+        .zip(keys.iter())
+        .map(|(v, k)| match v {
+            Some(v) => format!(r#"{{"key":"{k}","value":{v}}}"#),
+            None => format!(r#"{{"key":"{k}","value":null}}"#),
+        })
+        .collect();
+    drop(g);
+    ok(&format!(
+        r#"{{"values":[{items}]}}"#,
+        items = items.join(",")
+    ))
+}
+
+/// POST /api/v1/cache/mset  Body:
+/// `{"keyspace":"ks","ttl_ms":5000,"pairs":{"a":"1","b":"2"}}`
+fn cache_mset(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let ks = extract_json_field(body, "keyspace").unwrap_or_default();
+    if ks.is_empty() {
+        return bad_request("keyspace required");
+    }
+    let ttl_ms = extract_json_field(body, "ttl_ms").and_then(|v| v.parse::<u64>().ok());
+    let obj = match extract_json_object(body, "pairs") {
+        Some(o) => o,
+        None => return bad_request("pairs object required"),
+    };
+    let pairs = parse_string_pairs(&obj);
+    if pairs.is_empty() {
+        return bad_request("at least one pair required");
+    }
+    let count = pairs.len();
+    state.lock().unwrap().cache.mset(&ks, &pairs, ttl_ms);
+    ok(&format!(
+        r#"{{"message":"multi-set","keyspace":"{ks}","count":{count}}}"#
+    ))
 }
 
 /// Serve an object download as raw bytes when the request is authorized:
@@ -3358,6 +3709,161 @@ mod tests {
             rs("POST", "/api/v1/pubsub/nack", r#"{"id":"msg-unknown"}"#, &s).contains("404"),
             "unknown id must 404"
         );
+    }
+    // ── Cache HTTP endpoints ───────────────────────────────────────────────
+
+    #[test]
+    fn cache_status_empty() {
+        let resp = r("GET", "/api/v1/cache", "");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("\"keyspaces\":0"), "got: {resp}");
+    }
+
+    #[test]
+    fn cache_keyspace_ensure_list_info() {
+        let s = state();
+        let created = rs(
+            "POST",
+            "/api/v1/cache/keyspaces",
+            r#"{"name":"sessions","max_entries":50,"default_ttl_ms":1000}"#,
+            &s,
+        );
+        assert!(created.contains("200"), "got: {created}");
+        // Missing name → 400.
+        assert!(
+            rs("POST", "/api/v1/cache/keyspaces", "{}", &s).contains("400"),
+            "name required"
+        );
+        let list = rs("GET", "/api/v1/cache/keyspaces", "", &s);
+        assert!(list.contains(r#""name":"sessions""#), "got: {list}");
+        assert!(list.contains(r#""max_entries":50"#), "got: {list}");
+        let info = rs("GET", "/api/v1/cache/keyspaces/sessions", "", &s);
+        assert!(info.contains("200"), "got: {info}");
+        let missing = rs("GET", "/api/v1/cache/keyspaces/ghost", "", &s);
+        assert!(missing.contains("404"), "got: {missing}");
+    }
+
+    #[test]
+    fn cache_put_get_delete_roundtrip() {
+        let s = state();
+        rs("POST", "/api/v1/cache/keyspaces", r#"{"name":"users"}"#, &s);
+        let put = rs(
+            "PUT",
+            "/api/v1/cache/entry/users/user:1?ttl_ms=60000",
+            r#"{"id":1,"name":"ann"}"#,
+            &s,
+        );
+        assert!(put.contains("200"), "got: {put}");
+        // JSON body must survive storage byte-for-byte (escaped-quote path).
+        let get = rs("GET", "/api/v1/cache/entry/users/user%3A1", "", &s);
+        assert!(
+            get.contains(r#""value":{"id":1,"name":"ann"}"#),
+            "got: {get}"
+        );
+        assert!(get.contains(r#""ttl_ms_left":6"#), "ttl surfaced: {get}");
+        let del = rs("DELETE", "/api/v1/cache/entry/users/user%3A1", "", &s);
+        assert!(del.contains("200"), "got: {del}");
+        assert!(
+            rs("DELETE", "/api/v1/cache/entry/users/user%3A1", "", &s).contains("404"),
+            "double delete must 404"
+        );
+    }
+
+    #[test]
+    fn cache_get_unknown_key_is_404_miss() {
+        let resp = rs("GET", "/api/v1/cache/entry/nope/k", "", &state());
+        assert!(resp.contains("404"), "got: {resp}");
+        assert!(resp.contains("cache miss"), "got: {resp}");
+    }
+
+    #[test]
+    fn cache_put_requires_body_and_path() {
+        assert!(
+            r("PUT", "/api/v1/cache/entry/ks/", "").contains("400"),
+            "empty key must 400"
+        );
+        assert!(
+            r("PUT", "/api/v1/cache/entry/ks/k", "").contains("400"),
+            "empty body must 400"
+        );
+    }
+
+    #[test]
+    fn cache_invalidate_pattern_and_all() {
+        let s = state();
+        for k in ["user:1", "user:2", "order:9"] {
+            rs("PUT", &format!("/api/v1/cache/entry/sess/{k}"), "\"v\"", &s);
+        }
+        let resp = rs(
+            "DELETE",
+            "/api/v1/cache/keyspaces/sess?pattern=user:*",
+            "",
+            &s,
+        );
+        assert!(resp.contains("\"entries\":2"), "got: {resp}");
+        let rest = rs("GET", "/api/v1/cache/keyspaces/sess?entries=1", "", &s);
+        assert!(rest.contains("order:9"), "order key must survive: {rest}");
+        // Unknown keyspace → 404.
+        assert!(
+            rs("DELETE", "/api/v1/cache/keyspaces/ghost", "", &s).contains("404"),
+            "unknown keyspace must 404"
+        );
+    }
+
+    #[test]
+    fn cache_mget_mset_batches() {
+        let s = state();
+        let mset = rs(
+            "POST",
+            "/api/v1/cache/mset",
+            r#"{"keyspace":"batch","pairs":{"a":"v1","b":"v2"}}"#,
+            &s,
+        );
+        assert!(mset.contains("\"count\":2"), "got: {mset}");
+        let mget = rs(
+            "POST",
+            "/api/v1/cache/mget",
+            r#"{"keyspace":"batch","keys":["a","missing","b"]}"#,
+            &s,
+        );
+        // Values are raw JSON tokens, so strings round-trip quoted.
+        assert!(mget.contains(r#""key":"a","value":"v1""#), "got: {mget}");
+        assert!(
+            mget.contains(r#""key":"missing","value":null"#),
+            "got: {mget}"
+        );
+        // Validation errors.
+        assert!(
+            rs("POST", "/api/v1/cache/mget", r#"{"keys":["a"]}"#, &s).contains("400"),
+            "keyspace required"
+        );
+        assert!(
+            rs("POST", "/api/v1/cache/mset", r#"{"keyspace":"b"}"#, &s).contains("400"),
+            "pairs required"
+        );
+    }
+
+    #[test]
+    fn extract_json_field_survives_escaped_quotes() {
+        // Raw-token semantics: the scan honors escapes so the value is not
+        // truncated, but escapes are preserved verbatim (no unescaping).
+        let body = r#"{"keyspace":"ks","payload":"{\"a\":1}"}"#;
+        assert_eq!(
+            extract_json_field(body, "payload").as_deref(),
+            Some(r#"{\"a\":1}"#),
+            "escaped quotes must not truncate the value"
+        );
+    }
+
+    #[test]
+    fn parse_string_pairs_handles_escaped_values() {
+        // Raw-token semantics: quoted values keep their surrounding quotes
+        // so they stay valid JSON when re-emitted (cache stores them as-is).
+        let inner = r#""a":"\"1\"", "b": 2}"#;
+        let pairs = parse_string_pairs(inner);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], ("a".to_string(), r##""\"1\"""##.to_string()));
+        assert_eq!(pairs[1], ("b".to_string(), "2".to_string()));
     }
 }
 

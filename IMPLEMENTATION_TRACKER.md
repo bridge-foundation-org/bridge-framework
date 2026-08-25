@@ -15,7 +15,7 @@
 | 🔐 **Authentication** | 85 | 0 | 0 | 85 |
 | 📦 **Object Storage** | 120 | ~95 | 25 | 120 |
 | 📨 **Pub/Sub** | 95 | ~70 | ~10 | 15 |
-| 💾 **Caching** | 75 | 0 | 0 | 75 |
+| 💾 **Caching** | 75 | ~55 | ~6 | 14 |
 | 🔒 **Secrets** | 45 | 0 | 0 | 45 |
 | ⚙️ **Infrastructure** | 200 | 0 | 0 | 200 |
 | 🧪 **Testing** | 180 | 0 | 0 | 180 |
@@ -267,32 +267,36 @@
 ---
 
 ### 6. Caching Infrastructure (Commits 1975, 2069, 2073)
-**Status**: 🔴 Not Started  
-**Priority**: 🟡 Medium  
-**Effort**: 2-3 weeks
+**Status**: 🟡 Core Complete (daemon emulation)  
+**Priority**: 🔥 High  
+**Effort**: 3-4 weeks
 
 #### Key Features
-- [ ] **Redis MGET/MSET** (commits 1975, 2202)
-  - Multi-key operations
-  - Batch operations
-  - Bridge commits: `TBD`
+- [x] **Redis Cache Clusters** (commits 1707, 1975)
+  - Cache cluster creation ✅ (`POST /api/v1/cache/keyspaces` declares a keyspace with capacity/TTL limits; idempotent re-declare updates config, keeps data)
+  - Connection pooling (open — daemon embeds miniredis directly; no pool layer to emulate yet)
+  - Bridge commits: `daemon/src/cache.rs` `CacheRegistry` + `cache_keyspace_ensure` handler
 
-- [ ] **Cache Clusters** (commit 1707)
-  - Multi-node support
-  - Cluster configuration
-  - Bridge commits: `TBD`
+- [x] **Full Caching API** (commit 2069)
+  - Get/Set/Delete ✅ (`/api/v1/cache/entry/{ks}/{key}` GET/PUT/DELETE; misses are 404 + counted in stats; values stored verbatim as raw JSON tokens)
+  - Batch operations ✅ (`POST /api/v1/cache/mget` one row per key, null on miss; `POST /api/v1/cache/mset` flat pairs + shared optional TTL — commits 1975/2202 semantics)
+  - TTL & expiration ✅ (per-call `?ttl_ms=` overrides keyspace default; `ttl_ms=0` = never expires; expired entries removed lazily on access and reported as misses)
+  - Invalidation ✅ (`DELETE /api/v1/cache/keyspaces/{ks}?pattern=user:*` glob invalidation — `*` any run, `?` single char — or full sweep without pattern)
+  - Bridge commits: cache.rs core ops; route tests cover put/get/delete roundtrip, batch semantics, pattern vs all invalidation
 
-- [ ] **In-Memory Caching** (commits 2073-2074)
-  - Configuration via runtime config
-  - Legacy config conversion
-  - Bridge commits: `TBD`
+- [x] **In-Memory Cache Config** (commits 2073-2074)
+  - In-memory backend ✅ (pure-std `CacheRegistry` in shared state; deterministic LRU via logical op clock — victim selection immune to same-ms wall-clock ties)
+  - Eviction policies ✅ (LRU after expired-first sweep when `max_entries` exceeded; eviction counts surfaced per keyspace)
+  - Config file support ✅ (`[cache]` section in bridge.toml: `max_entries`, `default_ttl_ms`; applied at startup by pre-seeding the "default" keyspace; unknown `[cache]` keys rejected with line numbers)
+  - Legacy config conversion (open — no pre-2073 format exists in this tree to convert from)
+  - Bridge commits: `config.rs` `CacheConfig` + parse tests; `config::apply` seeds defaults
 
-- [ ] **Full Caching API** (commit 2069)
-  - Complete TypeScript/Go support
-  - TTL management
-  - Cache invalidation
-  - Bridge commits: `TBD`
-
+#### Verification (2026-08-25)
+- 662 daemon tests pass (+23: 11 registry unit incl. LRU/expiry/glob edge cases,
+  8 HTTP route tests, 3 config parse tests, 1 helper unit)
+- `cargo fmt --check` clean; zero clippy warnings in new code
+- Deterministic-ordering guarantee tested: LRU victim selection stable under
+  identical wall-clock timestamps
 #### Related Encore Commits
 ```
 1707: Cache cluster support

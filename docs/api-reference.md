@@ -83,6 +83,16 @@ Unauthorized requests get `401` with body `{"error":"unauthenticated","message":
 | POST | `/api/v1/pubsub/ack` | Acknowledge message |
 | POST | `/api/v1/pubsub/nack` | Negative-acknowledge (retry/DLQ) |
 | GET | `/api/v1/pubsub/dlq/:topic/:subscriber` | Dead-letter queue contents |
+| GET | `/api/v1/cache` | Cache status (keyspaces/entries/hits/misses) |
+| GET | `/api/v1/cache/keyspaces` | List keyspaces |
+| POST | `/api/v1/cache/keyspaces` | Declare keyspace |
+| GET | `/api/v1/cache/keyspaces/:ks` | Keyspace stats (+`?entries=1`) |
+| DELETE | `/api/v1/cache/keyspaces/:ks?pattern=` | Invalidate (glob or all) |
+| GET | `/api/v1/cache/entry/:ks/:key` | Get entry (miss → 404) |
+| PUT | `/api/v1/cache/entry/:ks/:key?ttl_ms=` | Set entry |
+| DELETE | `/api/v1/cache/entry/:ks/:key` | Delete entry |
+| POST | `/api/v1/cache/mget` | Batch get |
+| POST | `/api/v1/cache/mset` | Batch set |
 
 ---
 
@@ -335,6 +345,76 @@ flight → `404`.
 
 ```json
 {"topic":"jobs","subscriber":"w","messages":[{"id":"msg-...","payload":{"t":1},...}]}
+```
+
+---
+
+## Cache
+
+In-memory keyspace cache (Encore `RedisCluster` in-memory mode): named
+keyspaces with per-keyspace capacity + TTL defaults, LRU eviction, and
+hit/miss counters. Values are raw JSON tokens — stored verbatim, returned
+verbatim.
+
+### POST /api/v1/cache/keyspaces
+
+```json
+{"name": "sessions", "max_entries": 1000, "default_ttl_ms": 300000}
+```
+
+Only `name` is required; omitted limits fall back to the `[cache]`
+section of `bridge.toml`. Re-declaring updates the config but keeps data.
+
+### PUT /api/v1/cache/entry/:ks/:key?ttl_ms=60000
+
+Body is any JSON value, stored as-is:
+
+```json
+{"id": 1, "name": "ann"}
+```
+
+`ttl_ms=0` means never expires. Response includes how many entries were
+LRU-evicted to enforce `max_entries`:
+
+```json
+{"message":"cached","keyspace":"ks","key":"user:1","evicted":0}
+```
+
+### GET /api/v1/cache/entry/:ks/:key
+
+```json
+{"key":"user:1","value":{"id":1,"name":"ann"},"ttl_ms_left":59999}
+```
+
+`ttl_ms_left` is `null` for entries without expiry. Unknown or expired
+keys return `404` with `{"error":"cache miss"}` — both count toward the
+keyspace's `misses` stat.
+
+### DELETE /api/v1/cache/keyspaces/:ks?pattern=user:*
+
+Invalidates by glob (`*` = any run, `?` = one char), or everything when
+the pattern is omitted. Reports live entries killed:
+
+```json
+{"message":"invalidated","keyspace":"sess","entries":2}
+```
+
+### POST /api/v1/cache/mget · /api/v1/cache/mset
+
+Batch reads return one row per requested key (`value: null` on miss):
+
+```json
+{"keyspace": "batch", "keys": ["a", "missing", "b"]}
+```
+
+```json
+{"values":[{"key":"a","value":"v1"},{"key":"missing","value":null},{"key":"b","value":"v2"}]}
+```
+
+Batch writes take a flat pairs object plus an optional shared TTL:
+
+```json
+{"keyspace": "batch", "pairs": {"a": "\"v1\"", "b": "\"v2\""}, "ttl_ms": 5000}
 ```
 
 ---

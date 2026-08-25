@@ -9,6 +9,7 @@
 
 mod auth;
 mod autocomplete;
+mod cache;
 mod config;
 mod config_schema;
 mod context;
