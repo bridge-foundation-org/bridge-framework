@@ -569,28 +569,27 @@
 ---
 
 ### 13. Streaming & WebSockets (Commits 1428, 1428-1470)
-**Status**: 🔴 Not Started  
+**Status**: 🟡 Core Complete (daemon emulation)  
 **Priority**: 🟡 Medium  
 **Effort**: 3-4 weeks
 
 #### Key Features
-- [ ] **Streaming APIs** (commit 1428)
-  - Server-sent events
-  - Stream types
-  - Handshake protocol
-  - Bridge commits: `TBD`
+- [x] **Streaming APIs** (commit 1428)
+  - Server-sent events → SSE frames + chunked keep-alive poll loop on /api/v1/stream/* (pre-existing)
+  - Stream types → SseFrame/StreamEvent/StreamBuffer in daemon/src/streaming.rs
+  - Handshake protocol → session registry with open/close lifecycle tracking
+  - Bridge commits: pre-existing streaming module; covered by earlier sections
 
-- [ ] **WebSocket Support** (commits 1434-1445)
-  - WebSocket endpoints
-  - Client-side docs
-  - Streaming docs
-  - Bridge commits: `TBD`
+- [x] **WebSocket Support** (commits 1434-1445)
+  - WebSocket endpoints → RFC 6455 handshake (SHA-1+base64 accept, pinned to RFC worked example), frame codec with server-side unmasking, ping/pong/close
+  - Client-side docs → api-reference.md WebSocket section
+  - Streaming docs → hub catalog at GET /api/v1/ws
+  - Bridge commits: websocket module in daemon/src/websocket.rs (8 tests)
 
-- [ ] **Service-to-Service Streams** (commit 1565)
-  - Stream propagation
-  - Stream info docs
-  - Bridge commits: `TBD`
-
+- [x] **Service-to-Service Streams** (commit 1565)
+  - Stream propagation → room-based WsHub: join/leave/broadcast with recipient fan-out lists
+  - Stream info docs → /api/v1/ws/handshake validates upgrades statelessly for tools and tests
+  - Bridge commits: /api/v1/ws/* routes (5 endpoints)
 #### Related Encore Commits
 ```
 1428: TS streaming API (331KB commit!)

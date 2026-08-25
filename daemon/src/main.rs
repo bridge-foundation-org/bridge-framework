@@ -46,6 +46,7 @@ mod transactions;
 mod transport;
 mod validation;
 mod watcher;
+mod websocket;
 
 use std::sync::{Arc, Mutex};
 use std::thread;

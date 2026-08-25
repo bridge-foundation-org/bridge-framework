@@ -789,6 +789,13 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         // ── MCP (Model Context Protocol) surface ─────────────────────
         ("POST", "/api/v1/mcp") => mcp_request(req, state),
 
+        // ── WebSocket hub (service-to-service streams) ────────────────
+        ("GET", "/api/v1/ws") => ws_status(state),
+        ("POST", "/api/v1/ws/handshake") => ws_handshake(req),
+        ("POST", "/api/v1/ws/join") => ws_join(req, state),
+        ("POST", "/api/v1/ws/leave") => ws_leave(req, state),
+        ("POST", "/api/v1/ws/broadcast") => ws_broadcast(req, state),
+
         // ── Secrets management ────────────────────────────────────────────
         ("GET", "/api/v1/secrets") => secrets_list(state),
         ("POST", "/api/v1/secrets/set") => secrets_set(req, state),
@@ -2676,6 +2683,89 @@ fn mcp_request(req: &Request, state: &SharedState) -> String {
         .map(|p| p.replace("\\\"", "\""))
         .unwrap_or_else(|| "{}".into());
     json_response(200, &crate::mcp::handle(state, &method, &params))
+}
+
+// ── WebSocket hub (service-to-service streams) ────────────────────────
+
+fn ws_status(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.ws_hub.to_json())
+}
+
+/// POST /api/v1/ws/handshake — validate an upgrade request's headers
+/// and return the exact 101 response to send (or 400 guidance).
+fn ws_handshake(req: &Request) -> String {
+    match crate::websocket::handshake_response(&req.body) {
+        Some(resp) => json_response(
+            200,
+            &format!(r#"{{"upgrade":"ok","response":{}}}"#, crate::mcp::json_str(&resp)),
+        ),
+        None => bad_request("not a valid websocket upgrade (need Upgrade: websocket, Connection: Upgrade, Sec-WebSocket-Key)"),
+    }
+}
+
+/// POST /api/v1/ws/join — `{"conn":"ws000001","room":"chat"}`.
+/// Auto-registers unknown connections into a synthetic room listing.
+fn ws_join(req: &Request, state: &SharedState) -> String {
+    let b = req.body.trim();
+    let conn = extract_json_field(b, "conn").unwrap_or_default();
+    let room = extract_json_field(b, "room").unwrap_or_default();
+    if conn.is_empty() || room.is_empty() {
+        return bad_request("conn and room required");
+    }
+    let mut g = state.lock().unwrap();
+    if g.ws_hub.join(&conn, &room) {
+        drop(g);
+        ok(&format!(
+            r#"{{"message":"joined","conn":"{conn}","room":"{room}"}}"#
+        ))
+    } else {
+        drop(g);
+        json_response(409, r#"{"error":"already a member"}"#)
+    }
+}
+
+fn ws_leave(req: &Request, state: &SharedState) -> String {
+    let b = req.body.trim();
+    let conn = extract_json_field(b, "conn").unwrap_or_default();
+    let room = extract_json_field(b, "room").unwrap_or_default();
+    if conn.is_empty() || room.is_empty() {
+        return bad_request("conn and room required");
+    }
+    let mut g = state.lock().unwrap();
+    if g.ws_hub.leave(&conn, &room) {
+        drop(g);
+        ok(&format!(
+            r#"{{"message":"left","conn":"{conn}","room":"{room}"}}"#
+        ))
+    } else {
+        drop(g);
+        not_found()
+    }
+}
+
+/// POST /api/v1/ws/broadcast — `{"room":"chat","sender":"a","message":{...}}`.
+/// Returns the recipient list the caller must fan out to.
+fn ws_broadcast(req: &Request, state: &SharedState) -> String {
+    let b = req.body.trim();
+    let room = extract_json_field(b, "room").unwrap_or_default();
+    if room.is_empty() {
+        return bad_request("room required");
+    }
+    let sender = extract_json_field(b, "sender").unwrap_or_default();
+    let message = extract_json_field(b, "message")
+        .map(|m| m.replace("\\\"", "\""))
+        .unwrap_or_else(|| "null".into());
+    let recipients = {
+        let g = state.lock().unwrap();
+        g.ws_hub.recipients(&room, &sender)
+    };
+    let ids: Vec<String> = recipients.iter().map(|r| format!(r#""{r}""#)).collect();
+    ok(&format!(
+        r#"{{"room":"{room}","recipients":[{}],"count":{},"message":{message}}}"#,
+        ids.join(","),
+        recipients.len(),
+    ))
 }
 
 // ── Secrets management ────────────────────────────────────────────────────
@@ -4686,6 +4776,83 @@ mod tests {
         assert!(rs("POST", "/api/v1/mcp", "", &s).contains("400"));
         let unk = rs("POST", "/api/v1/mcp", r#"{"method":"nope"}"#, &s);
         assert!(unk.contains("-32601"), "got: {unk}");
+    }
+
+    #[test]
+    fn websocket_hub_lifecycle_and_handshake() {
+        let s = state();
+        // Handshake validation: RFC example must produce the exact accept.
+        let raw = "GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
+        let hs = rs(
+            "POST",
+            "/api/v1/ws/handshake",
+            &raw.replace("\"", "\\\""),
+            &s,
+        );
+        assert!(hs.contains("200"), "got: {hs}");
+        assert!(hs.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "accept: {hs}");
+        // Invalid upgrade → 400.
+        assert!(rs("POST", "/api/v1/ws/handshake", "not http", &s).contains("400"));
+
+        // Join two connections into chat; duplicate join → 409.
+        assert!(rs(
+            "POST",
+            "/api/v1/ws/join",
+            r#"{"conn":"ws1","room":"chat"}"#,
+            &s
+        )
+        .contains("200"));
+        assert!(rs(
+            "POST",
+            "/api/v1/ws/join",
+            r#"{"conn":"ws2","room":"chat"}"#,
+            &s
+        )
+        .contains("200"));
+        assert!(
+            rs(
+                "POST",
+                "/api/v1/ws/join",
+                r#"{"conn":"ws1","room":"chat"}"#,
+                &s
+            )
+            .contains("409"),
+            "duplicate join"
+        );
+
+        // Broadcast from ws1 reaches ws2 only.
+        let bc = rs(
+            "POST",
+            "/api/v1/ws/broadcast",
+            r#"{"room":"chat","sender":"ws1","message":"{\"text\":\"hi\"}"}"#,
+            &s,
+        );
+        assert!(bc.contains(r#"recipients":["ws2"]"#), "got: {bc}");
+        assert!(bc.contains(r#""count":1"#));
+
+        // Leave then broadcast reaches nobody; leaving again → 404.
+        rs(
+            "POST",
+            "/api/v1/ws/leave",
+            r#"{"conn":"ws2","room":"chat"}"#,
+            &s,
+        );
+        let bc2 = rs(
+            "POST",
+            "/api/v1/ws/broadcast",
+            r#"{"room":"chat","sender":"ws1"}"#,
+            &s,
+        );
+        assert!(bc2.contains(r#""count":0"#), "got: {bc2}");
+        assert!(rs(
+            "POST",
+            "/api/v1/ws/leave",
+            r#"{"conn":"ws2","room":"chat"}"#,
+            &s
+        )
+        .contains("404"));
+        // Missing fields → 400.
+        assert!(rs("POST", "/api/v1/ws/join", "{}", &s).contains("400"));
     }
 
     #[test]

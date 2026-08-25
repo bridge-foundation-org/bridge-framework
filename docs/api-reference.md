@@ -120,6 +120,11 @@ Unauthorized requests get `401` with body `{"error":"unauthenticated","message":
 | POST | `/api/v1/deploy/rollback` | Roll target back to superseded revision |
 | GET | `/api/v1/deploy/dockerfile` | Generated multi-platform Dockerfile |
 | POST | `/api/v1/mcp` | MCP JSON-RPC 2.0 endpoint (tools/list, tools/call) |
+| GET | `/api/v1/ws` | WebSocket room catalog (members per room) |
+| POST | `/api/v1/ws/handshake` | Validate upgrade request, return 101 response |
+| POST | `/api/v1/ws/join` | Join a connection to a room (409 on duplicate) |
+| POST | `/api/v1/ws/leave` | Leave a room (404 when not a member) |
+| POST | `/api/v1/ws/broadcast` | Fan-out: returns recipient list for a room |
 
 ---
 
@@ -691,6 +696,46 @@ Tool calls dispatch through the real HTTP router; the response is
 returned as content text with `isError:true` when status ≥ 400.
 Protocol errors use JSON-RPC codes: `-32601` unknown method, `-32602`
 unknown tool. `initialize` and `ping` support handshakes/reconnect.
+
+---
+
+## WebSockets
+
+RFC 6455 support (Encore commits 1434-1445, 1565 parity): handshake
+validation, frame codec primitives, and a room hub for
+service-to-service fan-out.
+
+### GET /api/v1/ws
+
+```json
+{"rooms":[{"room":"chat","members":["ws000001","ws000002"]}],"count":1}
+```
+
+### POST /api/v1/ws/handshake
+
+Body: a raw HTTP upgrade request. Validates `Upgrade: websocket`,
+`Connection: Upgrade`, and `Sec-WebSocket-Key`, returning the exact
+`101 Switching Protocols` response to write back (accept value computed
+via SHA-1 + base64 per RFC 6455 §1.3). Invalid upgrades → `400`.
+
+### POST /api/v1/ws/join · POST /api/v1/ws/leave
+
+```json
+{"conn": "ws000001", "room": "chat"}
+```
+
+Duplicate join → `409`; leave when not a member → `404`. Empty rooms
+are pruned automatically; disconnecting removes a conn from all rooms.
+
+### POST /api/v1/ws/broadcast
+
+```json
+{"room": "chat", "sender": "ws000001", "message": {"text": "hi"}}
+→ 200 {"room":"chat","recipients":["ws000002"],"count":1,"message":{"text":"hi"}}
+```
+
+Returns the recipients the caller fans out to (everyone except the
+sender). The message is echoed verbatim for auditability.
 
 ---
 

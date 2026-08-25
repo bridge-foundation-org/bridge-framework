@@ -27,6 +27,7 @@ use crate::testing::TestRegistry;
 use crate::transactions::TxRegistry;
 use crate::validation::ValidationRegistry;
 use crate::watcher::WatchRegistry;
+use crate::websocket::WsHub;
 
 // ── Trace entry ───────────────────────────────────────────────────────────────
 
@@ -239,6 +240,8 @@ pub struct State {
     pub testing: TestRegistry,
     /// Deployment registry (targets, revisions, status machine).
     pub deploys: DeployRegistry,
+    /// WebSocket room hub (service-to-service streams).
+    pub ws_hub: WsHub,
     /// Monotonically increasing trace ID counter.
     trace_counter: u64,
     /// RNG state for sampling (simple LCG).
@@ -281,6 +284,7 @@ impl State {
             infra: InfraConfig::new(),
             testing: TestRegistry::new(),
             deploys: DeployRegistry::new(),
+            ws_hub: WsHub::new(),
             trace_counter: 0,
             rng_state: 12345678901234567,
         }
