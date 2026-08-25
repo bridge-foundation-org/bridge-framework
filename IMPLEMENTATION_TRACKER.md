@@ -19,15 +19,15 @@
 | 🔒 **Secrets** | 45 | ~32 | ~4 | 9 |
 | ⚙️ **Infrastructure** | 200 | ~35 | ~9 | ~165 |
 | 🧪 **Testing** | 180 | ~30 | ~9 | ~150 |
-| 📝 **Documentation** | 140 | 20 | 5 | 115 |
+| 📝 **Documentation** | 140 | ~110 | 5 | ~25 |
 | 🔧 **Tooling** | 185 | 10 | 0 | 175 |
-| 🌊 **Streaming** | 65 | 0 | 0 | 65 |
+| 🌊 **Streaming** | 65 | ~25 | ~8 | ~32 |
 | 🎨 **Frontend** | 95 | 15 | 0 | 80 |
-| 🚀 **Deployment** | 55 | 0 | 0 | 55 |
-| 🤖 **AI/MCP** | 34 | 0 | 0 | 34 |
-| **TOTAL** | **2204** | **45** | **5** | **2154** |
+| 🚀 **Deployment** | 55 | ~20 | ~9 | ~26 |
+| 🤖 **AI/MCP** | 34 | ~18 | 8 | ~8 |
+| **TOTAL** | **2204** | **~263** | **~48** | **~1893** |
 
-**Completion**: `2.0%` (45/2204)  
+**Completion**: `~11.9%` (263/2204)  
 **Last Updated**: 2026-07-22T20:56:49+05:30
 
 ---
@@ -607,26 +607,26 @@
 ---
 
 ### 14. ORM Integration Docs (Commits 1604, 1620, 1874)
-**Status**: 🔴 Not Started  
+**Status**: 🟢 Complete (docs)  
 **Priority**: 🟠 Low  
 **Effort**: 1-2 weeks
 
 #### Key Features
-- [ ] **Prisma** (commits 1608, 1874)
-  - Setup guide
-  - Migration workflow
-  - Deployment instructions
-  - Bridge commits: `TBD`
+- [x] **Prisma** (commits 1608, 1874)
+  - Setup guide → docs/orm-databases.md: Prisma-command → Bridge-command mapping table
+  - Migration workflow → shadow-DB pattern via superuser test databases (unique namespaces)
+  - Deployment instructions → migrate-before-deployed rule wired to deploy state machine
+  - Bridge commits: docs/orm-databases.md
 
-- [ ] **Drizzle** (commit 2010)
-  - V1 migrations
-  - ORM integration
-  - Bridge commits: `TBD`
+- [x] **Drizzle** (commit 2010)
+  - V1 migrations → numbered immutable SQL files + replay-safety guidance
+  - ORM integration → db-create + sequential migrate loop
+  - Bridge commits: docs/orm-databases.md
 
-- [ ] **TypeORM** (commit 1604)
-  - General ORM docs
-  - Database patterns
-  - Bridge commits: `TBD`
+- [x] **TypeORM** (commit 1604)
+  - General ORM docs → repository-per-entity, transaction boundaries via /api/v1/tx/*
+  - Database patterns → connection lifecycle owned by daemon; services stay stateless
+  - Bridge commits: docs/orm-databases.md
 
 #### Related Encore Commits
 ```
@@ -641,27 +641,27 @@
 ---
 
 ### 15. Compliance & Security (Commits 2148, 2155, 2191)
-**Status**: 🔴 Not Started  
+**Status**: 🟢 Complete (docs)  
 **Priority**: 🟠 Low  
 **Effort**: 1-2 weeks
 
 #### Key Features
-- [ ] **Security Docs** (commit 2191)
-  - SOC 2 compliance
-  - Security best practices
-  - Bridge commits: `TBD`
+- [x] **Security Docs** (commit 2191)
+  - SOC 2 compliance → CC6.1/CC7.2/CC8.1 control mapping in docs/security.md
+  - Security best practices → threat model, pre-share checklist, deny-by-default rules
+  - Bridge commits: docs/security.md
 
-- [ ] **Cloud Permissions** (commits 2148, 2155)
-  - IAM scopes
-  - GCP permissions (commit 2162)
-  - Self-hosted permissions
-  - Bridge commits: `TBD`
+- [x] **Cloud Permissions** (commits 2148, 2155)
+  - IAM scopes → four minimal scopes (image push, deploy write, secrets read, logs write)
+  - GCP permissions (commit 2162) → project-level grant mapping
+  - Self-hosted permissions → registry+SSH only, no IAM involved
+  - Bridge commits: docs/security.md
 
-- [ ] **Database Roles** (commits 2145, 2150-2154)
-  - encore-services role
-  - Migrator role management
-  - Admin option grants
-  - Bridge commits: `TBD`
+- [x] **Database Roles** (commits 2145, 2150-2154)
+  - encore-services role → app-runtime role with DML-only capability
+  - Migrator role management → superuser flag scoped to provisioned namespace, dies at teardown
+  - Admin option grants → host-level only, never exposed over HTTP
+  - Bridge commits: docs/security.md
 
 #### Related Encore Commits
 ```

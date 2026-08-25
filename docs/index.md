@@ -21,3 +21,5 @@ Bridge is a lightweight Encore-inspired framework for defining services, compili
 - [Tutorials](./tutorials.md)
 - [Integration Guides](./integration-guides.md)
 - [LLM Instructions](./llm-instructions.md)
+- [ORM & Databases](./orm-databases.md)
+- [Security & Compliance](./security.md)
