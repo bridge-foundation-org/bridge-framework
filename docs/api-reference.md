@@ -73,6 +73,16 @@ Unauthorized requests get `401` with body `{"error":"unauthenticated","message":
 | POST | `/api/v1/pg/migrate` | Run SQL migration |
 | DELETE | `/api/v1/pg/destroy` | Destroy Postgres container |
 | GET | `/api/v1/redis/status` | Miniredis status |
+| GET | `/api/v1/pubsub` | Pub/Sub broker status |
+| POST | `/api/v1/pubsub/topics` | Create topic |
+| POST | `/api/v1/pubsub/publish` | Publish message |
+| GET | `/api/v1/pubsub/subscriptions` | List subscriptions |
+| POST | `/api/v1/pubsub/subscriptions` | Subscribe |
+| GET | `/api/v1/pubsub/subscriptions/:topic/:subscriber` | Subscription detail |
+| POST | `/api/v1/pubsub/subscriptions/:topic/:subscriber/pull` | Pull next message |
+| POST | `/api/v1/pubsub/ack` | Acknowledge message |
+| POST | `/api/v1/pubsub/nack` | Negative-acknowledge (retry/DLQ) |
+| GET | `/api/v1/pubsub/dlq/:topic/:subscriber` | Dead-letter queue contents |
 
 ---
 
@@ -245,6 +255,86 @@ See [config.md](config.md) for full documentation.
   ],
   "watch": {"enabled": true, "poll_ms": 500, "files": ["app.bridge"]}
 }
+```
+
+---
+
+## Pub/Sub
+
+In-process message broker (Encore topics/subscriptions semantics):
+fan-out publish, at-least-once pull delivery, ack/nack with retry and
+dead-letter queues, optional strict FIFO ordering.
+
+### POST /api/v1/pubsub/topics
+
+```json
+{"name": "orders"}
+```
+
+`409` when the topic already exists. Topics also materialize implicitly on
+first publish or subscribe.
+
+### POST /api/v1/pubsub/publish
+
+```json
+{
+  "topic": "orders",
+  "payload": {"id": 1},
+  "ordering_key": "user-42",
+  "attrs": {"source": "web"}
+}
+```
+
+Only `topic` is required; `payload` defaults to `null`. Fans out to every
+attached subscriber. Response reports the real fan-out width:
+
+```json
+{"message":"published","id":"msg-1720000000-7","topic":"orders","subscribers":2}
+```
+
+### POST /api/v1/pubsub/subscriptions
+
+```json
+{
+  "topic": "orders",
+  "subscriber": "billing",
+  "max_retries": 3,
+  "ack_deadline_secs": 30,
+  "message_ordering": true
+}
+```
+
+All fields except `topic`/`subscriber` are optional. Re-subscribing updates
+the config in place (never double-delivers) and responds
+`{"message":"subscription updated",...}`.
+
+### POST /api/v1/pubsub/subscriptions/:topic/:subscriber/pull
+
+Delivers the next pending message and marks it in-flight:
+
+```json
+{"message":{"id":"msg-1720000000-7","topic":"orders","payload":{"id":1},"published_at":1720000000,"attempt":1,"ordering_key":"user-42","source":"web"},"topic":"orders","subscriber":"billing"}
+```
+
+Empty or ordering-blocked queues return `{"message":null,...,"reason":"empty or ordering-blocked"}`.
+Unknown subscription → `404`. With `message_ordering: true`, no further
+messages are delivered until the in-flight head is acked or nacked.
+
+### POST /api/v1/pubsub/ack · /api/v1/pubsub/nack
+
+```json
+{"id": "msg-1720000000-7", "reason": "transient failure"}
+```
+
+`ack` settles the message. `nack` requeues it until `attempt` exceeds
+`max_retries`, after which it moves to that subscription's dead-letter
+queue (`reason` optional, default `"error"`). Settling an id that is not in
+flight → `404`.
+
+### GET /api/v1/pubsub/dlq/:topic/:subscriber
+
+```json
+{"topic":"jobs","subscriber":"w","messages":[{"id":"msg-...","payload":{"t":1},...}]}
 ```
 
 ---

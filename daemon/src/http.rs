@@ -19,6 +19,7 @@ use std::time::Instant;
 
 use crate::auth::{self, bearer_from_header};
 use crate::middleware::{MiddlewareBuilder, MiddlewareContext, Scope};
+use crate::pubsub;
 use crate::ratelimit::BucketKey;
 use crate::sqldb;
 use crate::state::{LogLevel, SharedState};
@@ -730,6 +731,22 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("GET", p) if p.starts_with("/api/v1/storage/objects/") => {
             storage_object_info(state, &req.path)
         }
+
+        // ── Pub/Sub broker ──────────────────────────────────────────────────────
+        ("GET", "/api/v1/pubsub") => pubsub_status(state),
+        ("GET", "/api/v1/pubsub/subscriptions") => pubsub_subscriptions(state),
+        ("POST", "/api/v1/pubsub/topics") => pubsub_topic_create(req, state),
+        ("POST", "/api/v1/pubsub/publish") => pubsub_publish(req, state),
+        ("POST", "/api/v1/pubsub/subscriptions") => pubsub_subscribe(req, state),
+        ("GET", p) if p.starts_with("/api/v1/pubsub/subscriptions/") => {
+            pubsub_subscription_info(state, &req.path)
+        }
+        ("POST", p) if p.starts_with("/api/v1/pubsub/subscriptions/") && p.ends_with("/pull") => {
+            pubsub_pull(req, state, p)
+        }
+        ("POST", "/api/v1/pubsub/ack") => pubsub_ack(req, state),
+        ("POST", "/api/v1/pubsub/nack") => pubsub_nack(req, state),
+        ("GET", p) if p.starts_with("/api/v1/pubsub/dlq/") => pubsub_dlq(state, &req.path),
 
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
@@ -2019,6 +2036,206 @@ fn storage_err(e: String) -> String {
     json_response(status, &format!(r#"{{"error":"{e}"}}"#))
 }
 
+// ── Pub/Sub handlers ─────────────────────────────────────────────────────────
+
+/// Parse `/api/v1/pubsub/<kind>/<topic>[/<sub>...]` into (topic, sub?).
+fn split_pubsub_path(path: &str, kind: &str) -> Option<(String, Option<String>)> {
+    let rest = path.strip_prefix("/api/v1/pubsub/")?;
+    let rest = rest.strip_prefix(kind)?.strip_prefix('/')?;
+    let (t, s) = match rest.split_once('/') {
+        Some((t, s)) if !t.is_empty() && !s.is_empty() => (t, Some(percent_decode(s))),
+        _ if !rest.is_empty() => (rest, None),
+        _ => return None,
+    };
+    Some((percent_decode(t), s))
+}
+
+fn pubsub_status(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.pubsub.status_json())
+}
+
+fn pubsub_subscriptions(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.pubsub.subscriptions_json())
+}
+
+/// Create an empty topic. Topics also materialize implicitly on first publish.
+fn pubsub_topic_create(req: &Request, state: &SharedState) -> String {
+    let Some(name) = extract_json_field(req.body.trim(), "name").filter(|n| !n.is_empty()) else {
+        return bad_request("name required");
+    };
+    let g = state.lock().unwrap();
+    if g.pubsub.topic_exists(&name) {
+        return json_response(
+            409,
+            &format!(r#"{{"error":"topic {name:?} already exists"}}"#),
+        );
+    }
+    g.pubsub.ensure_topic(&name);
+    drop(g);
+    ok(&format!(r#"{{"message":"topic created","name":"{name}"}}"#))
+}
+
+/// Publish: `{"topic":"orders","payload":{...},"ordering_key":"k","attrs":{"a":"b"}}`
+fn pubsub_publish(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let Some(topic) = extract_json_field(body, "topic").filter(|t| !t.is_empty()) else {
+        return bad_request("topic required");
+    };
+    let payload = extract_json_object(body, "payload")
+        .map(|obj| obj.to_string())
+        .or_else(|| extract_json_field(body, "payload"))
+        .unwrap_or_else(|| "null".to_string());
+    let mut msg = pubsub::Message::new(&topic, &payload);
+    if let Some(k) = extract_json_field(body, "ordering_key") {
+        msg = msg.with_ordering_key(k);
+    }
+    if let Some(obj) = extract_json_object(body, "attrs") {
+        for (k, v) in parse_flat_json_object(&obj) {
+            msg = msg.with_attr(k, v);
+        }
+    }
+    state.lock().unwrap().pubsub.publish(msg.clone());
+    let subscribers = state.lock().unwrap().pubsub.subscriber_count(&msg.topic);
+    ok(&format!(
+        r#"{{"message":"published","id":"{}","topic":"{}","subscribers":{}}}"#,
+        msg.id, msg.topic, subscribers
+    ))
+}
+
+/// Subscribe: `{"topic":"orders","subscriber":"billing","max_retries":5,
+///              "message_ordering":true,"ack_deadline_secs":30}` — all but topic/sub optional.
+fn pubsub_subscribe(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let Some(topic) = extract_json_field(body, "topic").filter(|t| !t.is_empty()) else {
+        return bad_request("topic required");
+    };
+    let Some(subscriber) = extract_json_field(body, "subscriber").filter(|s| !s.is_empty()) else {
+        return bad_request("subscriber required");
+    };
+    let cfg = pubsub::SubscriptionConfig {
+        max_concurrency: extract_json_field(body, "max_concurrency")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(10),
+        max_retries: extract_json_field(body, "max_retries")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3),
+        retry_delay_ms: extract_json_field(body, "retry_delay_ms")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000),
+        ack_deadline_secs: extract_json_field(body, "ack_deadline_secs")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30),
+        message_ordering: extract_json_field(body, "message_ordering")
+            .map(|v| v == "true")
+            .unwrap_or(false),
+    };
+    let g = state.lock().unwrap();
+    let already = g.pubsub.has_subscription(&topic, &subscriber);
+    g.pubsub.subscribe(&topic, &subscriber, cfg);
+    drop(g);
+    if already {
+        json_response(
+            200,
+            &format!(
+                r#"{{"message":"subscription updated","topic":"{topic}","subscriber":"{subscriber}"}}"#
+            ),
+        )
+    } else {
+        ok(&format!(
+            r#"{{"message":"subscribed","topic":"{topic}","subscriber":"{subscriber}"}}"#
+        ))
+    }
+}
+
+/// GET /api/v1/pubsub/subscriptions/{topic}/{subscriber} — config + depths.
+fn pubsub_subscription_info(state: &SharedState, full_path: &str) -> String {
+    let path_no_q = full_path.split('?').next().unwrap_or(full_path);
+    let Some((topic, Some(subscriber))) = split_pubsub_path(path_no_q, "subscriptions") else {
+        return bad_request("topic and subscriber required");
+    };
+    let g = state.lock().unwrap();
+    match g.pubsub.subscription_json(&topic, &subscriber) {
+        Some(json) => ok(&json),
+        None => json_response(
+            404,
+            &format!(r#"{{"error":"subscription {topic}/{subscriber} not found"}}"#),
+        ),
+    }
+}
+
+/// Pull next message: POST /api/v1/pubsub/subscriptions/{topic}/{sub}/pull.
+/// Returns 204-style JSON `{"message":null}` when queue is empty/blocked.
+fn pubsub_pull(req: &Request, state: &SharedState, path: &str) -> String {
+    let _ = req;
+    let stem = path.trim_end_matches("/pull");
+    let Some((topic, Some(subscriber))) = split_pubsub_path(stem, "subscriptions") else {
+        return bad_request("topic and subscriber required");
+    };
+    let g = state.lock().unwrap();
+    if !g.pubsub.has_subscription(&topic, &subscriber) {
+        return json_response(
+            404,
+            &format!(r#"{{"error":"subscription {topic}/{subscriber} not found"}}"#),
+        );
+    }
+    match g.pubsub.pull(&topic, &subscriber) {
+        Some(msg) => ok(&format!(
+            r#"{{"message":{},"topic":"{topic}","subscriber":"{subscriber}"}}"#,
+            msg.to_json()
+        )),
+        None => ok(&format!(
+            r#"{{"message":null,"topic":"{topic}","subscriber":"{subscriber}","reason":"empty or ordering-blocked"}}"#
+        )),
+    }
+}
+
+/// Ack/nack share shape: `{"id":"msg-..."}` (+ optional nack reason).
+fn pubsub_ack(req: &Request, state: &SharedState) -> String {
+    let Some(id) = extract_json_field(req.body.trim(), "id").filter(|i| !i.is_empty()) else {
+        return bad_request("message id required");
+    };
+    let settled = state.lock().unwrap().pubsub.ack(&id);
+    if settled {
+        ok(&format!(r#"{{"message":"acked","id":"{id}"}}"#))
+    } else {
+        json_response(
+            404,
+            &format!(r#"{{"error":"message not in flight","id":"{id}"}}"#),
+        )
+    }
+}
+
+fn pubsub_nack(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let Some(id) = extract_json_field(body, "id").filter(|i| !i.is_empty()) else {
+        return bad_request("message id required");
+    };
+    let reason = extract_json_field(body, "reason").unwrap_or_else(|| "error".to_string());
+    let settled = state.lock().unwrap().pubsub.nack(&id, &reason);
+    if settled {
+        ok(&format!(
+            r#"{{"message":"nacked","id":"{id}","reason":"{reason}"}}"#
+        ))
+    } else {
+        json_response(
+            404,
+            &format!(r#"{{"error":"message not in flight","id":"{id}"}}"#),
+        )
+    }
+}
+
+/// GET /api/v1/pubsub/dlq/{topic}/{subscriber}
+fn pubsub_dlq(state: &SharedState, full_path: &str) -> String {
+    let path_no_q = full_path.split('?').next().unwrap_or(full_path);
+    let Some((topic, Some(subscriber))) = split_pubsub_path(path_no_q, "dlq") else {
+        return bad_request("topic and subscriber required");
+    };
+    let g = state.lock().unwrap();
+    ok(&g.pubsub.dlq_messages_json(&topic, &subscriber))
+}
+
 /// Serve an object download as raw bytes when the request is authorized:
 /// - public bucket → any GET/HEAD succeeds (Encore publicUrl semantics)
 /// - signed URL    → `?exp=&sig=` must verify for this exact method/bucket/key
@@ -2932,6 +3149,214 @@ mod tests {
         assert!(
             resp.contains("Retry-After"),
             "missing Retry-After header, got: {resp}"
+        );
+    }
+
+    // ── Pub/Sub HTTP endpoints ─────────────────────────────────────────────
+
+    #[test]
+    fn pubsub_status_empty() {
+        let resp = r("GET", "/api/v1/pubsub", "");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(resp.contains("\"topics\":0"), "got: {resp}");
+    }
+
+    #[test]
+    fn pubsub_topic_create_and_conflict() {
+        let s = state();
+        let created = rs("POST", "/api/v1/pubsub/topics", r#"{"name":"orders"}"#, &s);
+        assert!(created.contains("200"), "got: {created}");
+        // Duplicate → 409 (storage bucket convention)
+        let dup = rs("POST", "/api/v1/pubsub/topics", r#"{"name":"orders"}"#, &s);
+        assert!(dup.contains("409"), "got: {dup}");
+        // Missing name → 400
+        assert!(
+            rs("POST", "/api/v1/pubsub/topics", "{}", &s).contains("400"),
+            "empty body must 400"
+        );
+    }
+
+    #[test]
+    fn pubsub_subscribe_then_list_and_info() {
+        let s = state();
+        rs(
+            "POST",
+            "/api/v1/pubsub/subscriptions",
+            r#"{"topic":"orders","subscriber":"billing","max_retries":7,"message_ordering":true}"#,
+            &s,
+        );
+        let list = rs("GET", "/api/v1/pubsub/subscriptions", "", &s);
+        assert!(
+            list.contains(r#""topic":"orders","subscriber":"billing""#),
+            "got: {list}"
+        );
+
+        let info = rs("GET", "/api/v1/pubsub/subscriptions/orders/billing", "", &s);
+        assert!(info.contains("200"), "got: {info}");
+        assert!(
+            info.contains("\"max_retries\":7"),
+            "config not echoed: {info}"
+        );
+        assert!(info.contains("\"message_ordering\":true"), "got: {info}");
+
+        // Unknown subscription → 404
+        let missing = rs("GET", "/api/v1/pubsub/subscriptions/orders/ghost", "", &s);
+        assert!(missing.contains("404"), "got: {missing}");
+    }
+
+    #[test]
+    fn pubsub_subscribe_missing_fields_400() {
+        assert!(
+            r("POST", "/api/v1/pubsub/subscriptions", r#"{"topic":"t"}"#).contains("400"),
+            "subscriber required"
+        );
+        assert!(
+            r(
+                "POST",
+                "/api/v1/pubsub/subscriptions",
+                r#"{"subscriber":"s"}"#
+            )
+            .contains("400"),
+            "topic required"
+        );
+    }
+
+    #[test]
+    fn pubsub_publish_reports_real_subscriber_count() {
+        let s = state();
+        rs("POST", "/api/v1/pubsub/topics", r#"{"name":"fanout"}"#, &s);
+        for sub in ["a", "b"] {
+            rs(
+                "POST",
+                "/api/v1/pubsub/subscriptions",
+                &format!(r#"{{"topic":"fanout","subscriber":"{sub}"}}"#),
+                &s,
+            );
+        }
+        // Two publishes — count must stay 2, not grow with publish volume.
+        rs(
+            "POST",
+            "/api/v1/pubsub/publish",
+            r#"{"topic":"fanout","payload":{"n":1}}"#,
+            &s,
+        );
+        let second = rs(
+            "POST",
+            "/api/v1/pubsub/publish",
+            r#"{"topic":"fanout","payload":{"n":2}}"#,
+            &s,
+        );
+        assert!(second.contains("\"subscribers\":2"), "got: {second}");
+
+        // Publish to a topic with zero subscribers still succeeds.
+        let solo = rs(
+            "POST",
+            "/api/v1/pubsub/publish",
+            r#"{"topic":"lonely","payload":{}}"#,
+            &s,
+        );
+        assert!(solo.contains("\"subscribers\":0"), "got: {solo}");
+    }
+
+    #[test]
+    fn pubsub_publish_pull_ack_roundtrip_with_attrs_and_ordering_key() {
+        let s = state();
+        rs(
+            "POST",
+            "/api/v1/pubsub/subscriptions",
+            r#"{"topic":"events","subscriber":"w"}"#,
+            &s,
+        );
+        let pub_resp = rs(
+            "POST",
+            "/api/v1/pubsub/publish",
+            r#"{"topic":"events","payload":{"kind":"signup"},"attrs":{"source":"web"},"ordering_key":"user-42"}"#,
+            &s,
+        );
+        assert!(pub_resp.contains("200"), "got: {pub_resp}");
+
+        let pull = rs("POST", "/api/v1/pubsub/subscriptions/events/w/pull", "", &s);
+        assert!(pull.contains("\"ordering_key\":\"user-42\""), "got: {pull}");
+        assert!(pull.contains("\"source\":\"web\""), "attrs missing: {pull}");
+        // Message JSON must be well-formed — no trailing comma artifacts.
+        assert!(!pull.contains(",}"), "invalid JSON emitted: {pull}");
+
+        // Extract the id and ack it.
+        let id_start = pull.find(r#""id":"msg-"#).expect("id in response") + 6;
+        let id_len = pull[id_start..].find('"').unwrap();
+        let id = &pull[id_start..id_start + id_len];
+        let ack = rs(
+            "POST",
+            "/api/v1/pubsub/ack",
+            &format!(r#"{{"id":"{id}"}}"#),
+            &s,
+        );
+        assert!(ack.contains("200"), "got: {ack}");
+
+        // Empty queue afterwards — distinct from unknown-subscription case.
+        let empty = rs("POST", "/api/v1/pubsub/subscriptions/events/w/pull", "", &s);
+        assert!(empty.contains("\"message\":null"), "got: {empty}");
+    }
+
+    #[test]
+    fn pubsub_pull_unknown_subscription_404() {
+        let resp = rs(
+            "POST",
+            "/api/v1/pubsub/subscriptions/nope/nada/pull",
+            "",
+            &state(),
+        );
+        assert!(resp.contains("404"), "got: {resp}");
+    }
+
+    #[test]
+    fn pubsub_nack_requeues_then_dlq_lists_dead_letter() {
+        let s = state();
+        rs(
+            "POST",
+            "/api/v1/pubsub/subscriptions",
+            r#"{"topic":"jobs","subscriber":"w","max_retries":0}"#,
+            &s,
+        );
+        rs(
+            "POST",
+            "/api/v1/pubsub/publish",
+            r#"{"topic":"jobs","payload":{"t":1}}"#,
+            &s,
+        );
+        let pull = rs("POST", "/api/v1/pubsub/subscriptions/jobs/w/pull", "", &s);
+        let id_start = pull.find(r#""id":"msg-"#).expect("id in response") + 6;
+        let id_len = pull[id_start..].find('"').unwrap();
+        let id = &pull[id_start..id_start + id_len];
+
+        let nack = rs(
+            "POST",
+            "/api/v1/pubsub/nack",
+            &format!(r#"{{"id":"{id}","reason":"boom"}}"#),
+            &s,
+        );
+        assert!(nack.contains("200"), "got: {nack}");
+
+        let dlq = rs("GET", "/api/v1/pubsub/dlq/jobs/w", "", &s);
+        assert!(
+            dlq.contains(r#"{"t":1}"#),
+            "dead letter payload missing: {dlq}"
+        );
+
+        // Ack/nack of an already-settled or unknown id → 404.
+        assert!(
+            rs(
+                "POST",
+                "/api/v1/pubsub/ack",
+                &format!(r#"{{"id":"{id}"}}"#),
+                &s
+            )
+            .contains("404"),
+            "double-settle must 404"
+        );
+        assert!(
+            rs("POST", "/api/v1/pubsub/nack", r#"{"id":"msg-unknown"}"#, &s).contains("404"),
+            "unknown id must 404"
         );
     }
 }

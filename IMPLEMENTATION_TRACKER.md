@@ -14,7 +14,7 @@
 | 🎯 **TypeScript Runtime** | 380 | 0 | 0 | 380 |
 | 🔐 **Authentication** | 85 | 0 | 0 | 85 |
 | 📦 **Object Storage** | 120 | ~95 | 25 | 120 |
-| 📨 **Pub/Sub** | 95 | 0 | 0 | 95 |
+| 📨 **Pub/Sub** | 95 | ~70 | ~10 | 15 |
 | 💾 **Caching** | 75 | 0 | 0 | 75 |
 | 🔒 **Secrets** | 45 | 0 | 0 | 45 |
 | ⚙️ **Infrastructure** | 200 | 0 | 0 | 200 |
@@ -209,38 +209,44 @@
 ---
 
 ### 5. Pub/Sub Messaging (Commits 1758, 2000-2204)
-**Status**: 🔴 Not Started  
+**Status**: 🟡 Core Complete (daemon emulation)  
 **Priority**: 🔥 High  
 **Effort**: 5-6 weeks
 
 #### Key Features
-- [ ] **Topics & Subscriptions** (commits 1207, 1363)
-  - Topic creation
-  - Subscription management
-  - Message publishing
-  - Bridge commits: `TBD`
+- [x] **Topics & Subscriptions** (commits 1207, 1363)
+  - Topic creation ✅ (`POST /api/v1/pubsub/topics`; 409 on duplicate; implicit materialize on publish/subscribe)
+  - Subscription management ✅ (`POST/GET /api/v1/pubsub/subscriptions` + per-sub detail; idempotent re-subscribe updates config without double-delivery)
+  - Message publishing ✅ (`POST /api/v1/pubsub/publish`; response reports real fan-out width)
+  - Bridge commits: `daemon/src/pubsub.rs` + http.rs handlers — full HTTP surface `/api/v1/pubsub/*`
 
-- [ ] **Message Ordering** (commit 1758)
-  - Ordered delivery
-  - Partition keys
-  - Bridge commits: `TBD`
+- [x] **Message Ordering** (commit 1758)
+  - Ordered delivery ✅ (`message_ordering: true` enforces strict FIFO — pull blocks while any earlier message is in flight, mirroring GCP PubSub semantics)
+  - Partition keys (open — single global ordering-key space)
+  - Bridge commits: `Broker::pull` ordering gate + `ordered_subscription_blocks_on_inflight_head` test
 
-- [ ] **Delivery Guarantees** (commits 1383, 1427)
-  - At-least-once delivery
-  - Retry logic with backoff
-  - Dead letter queues
-  - Bridge commits: `TBD`
+- [x] **Delivery Guarantees** (commits 1383, 1427)
+  - At-least-once delivery ✅ (in-flight tracking; redelivery on nack)
+  - Retry logic ✅ (`max_retries` per subscription, requeue until exhausted; backoff delay config present but not yet timer-enforced)
+  - Dead letter queues ✅ (per topic+subscriber DLQ; `GET /api/v1/pubsub/dlq/{topic}/{sub}` lists contents)
+  - Bridge commits: `Broker::nack` retry/DLQ path; `pubsub_nack_requeues_then_dlq_lists_dead_letter` route test
 
-- [ ] **Push/Pull Subscriptions** (commits 2157, 2167)
-  - HTTP push endpoints
-  - Pull-based consumption
-  - Bridge commits: `TBD`
+- [~] **Push/Pull Subscriptions** (commits 2157, 2167) — pull done; push open
+  - HTTP push endpoints (open — no push delivery yet)
+  - Pull-based consumption ✅ (`POST .../subscriptions/{topic}/{sub}/pull`; 404 unknown subscription; `{"message":null}` when empty/ordering-blocked)
+  - Bridge commits: `pubsub_pull` handler
 
-- [ ] **Custom Attributes** (commit 1696)
-  - Message metadata
-  - Filtering
-  - Bridge commits: `TBD`
+- [~] **Custom Attributes** (commit 1696) — metadata done; filtering open
+  - Message metadata ✅ (`attrs` object on publish round-trips through pull JSON alongside `ordering_key`)
+  - Filtering (open — no attribute-based subscription filters)
+  - Bridge commits: `Message::with_attr` wiring in `pubsub_publish`
 
+#### Verification (2026-08-25)
+- 639 daemon tests pass (43 pubsub-related: broker unit + HTTP route tests)
+- `cargo fmt --check` clean; zero clippy warnings in changed module
+- Route tests cover: create/conflict/validation errors, fan-out counts,
+  publish→pull→ack roundtrip with attrs + ordering key, nack→DLQ,
+  double-settle and unknown-id 404s
 #### Related Encore Commits
 ```
 1207: SQS/SNS pubsub implementation

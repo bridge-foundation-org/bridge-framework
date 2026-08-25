@@ -50,26 +50,20 @@ impl Message {
     }
 
     pub fn to_json(&self) -> String {
-        let attrs: String = self
-            .attributes
-            .iter()
-            .map(|(k, v)| format!(",\"{}\":\"{}\"", k, v))
-            .collect();
-        let ordering = self
-            .ordering_key
-            .as_deref()
-            .map(|k| format!(",\"ordering_key\":\"{}\"", k))
-            .unwrap_or_default();
-        format!(
-            r#"{{"id":"{id}","topic":"{topic}","payload":{payload},"published_at":{ts},"attempt":{attempt}{ordering},{attrs}}}"#,
-            id = self.id,
-            topic = self.topic,
-            payload = self.payload,
-            ts = self.published_at,
-            attempt = self.attempt,
-            ordering = ordering,
-            attrs = attrs.trim_start_matches(','),
-        )
+        let mut fields: Vec<String> = vec![
+            format!(r#""id":"{}""#, self.id),
+            format!(r#""topic":"{}""#, self.topic),
+            format!(r#""payload":{}"#, self.payload),
+            format!(r#""published_at":{}"#, self.published_at),
+            format!(r#""attempt":{}"#, self.attempt),
+        ];
+        if let Some(k) = &self.ordering_key {
+            fields.push(format!(r#""ordering_key":"{k}""#));
+        }
+        for (k, v) in &self.attributes {
+            fields.push(format!(r#""{k}":"{v}""#));
+        }
+        format!("{{{}}}", fields.join(","))
     }
 }
 
@@ -146,19 +140,57 @@ impl Broker {
         })))
     }
 
-    /// Register a subscriber on a topic.
+    /// Register a subscriber on a topic. Idempotent: re-subscribing updates
+    /// the subscription's config in place instead of duplicating the entry
+    /// (which would double-deliver every later publish).
     pub fn subscribe(&self, topic: &str, subscriber: &str, config: SubscriptionConfig) {
         let mut inner = self.0.lock().unwrap();
-        inner
-            .subscriptions
-            .entry(topic.to_string())
-            .or_default()
-            .push(subscriber.to_string());
+        let subs = inner.subscriptions.entry(topic.to_string()).or_default();
+        if !subs.iter().any(|s| s == subscriber) {
+            subs.push(subscriber.to_string());
+        }
         inner.configs.insert(subscriber.to_string(), config);
         inner
             .queues
             .entry((topic.to_string(), subscriber.to_string()))
             .or_default();
+    }
+
+    /// Does the topic exist (declared or materialized by a publish)?
+    pub fn topic_exists(&self, topic: &str) -> bool {
+        self.0.lock().unwrap().subscriptions.contains_key(topic)
+    }
+
+    /// Is `subscriber` attached to `topic`?
+    pub fn has_subscription(&self, topic: &str, subscriber: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .subscriptions
+            .get(topic)
+            .map(|subs| subs.iter().any(|s| s == subscriber))
+            .unwrap_or(false)
+    }
+
+    /// Declare an empty topic (no subscribers yet).
+    pub fn ensure_topic(&self, topic: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .subscriptions
+            .entry(topic.to_string())
+            .or_default();
+    }
+
+    /// Number of subscribers attached to `topic` (0 when the topic is absent).
+    pub fn subscriber_count(&self, topic: &str) -> usize {
+        self.0
+            .lock()
+            .unwrap()
+            .subscriptions
+            .get(topic)
+            .map(|subs| subs.len())
+            .unwrap_or(0)
     }
 
     /// Publish a message to a topic. Fans out to all subscribers.
@@ -184,11 +216,31 @@ impl Broker {
     }
 
     /// Pull the next pending message for a subscriber.
+    ///
+    /// Ordered subscriptions (`message_ordering: true`) enforce strict FIFO:
+    /// if any earlier message is still in flight (delivered, unacked), pull
+    /// returns None until it is settled — mirroring GCP PubSub ordering.
     pub fn pull(&self, topic: &str, subscriber: &str) -> Option<Message> {
         let mut inner = self.0.lock().unwrap();
+
+        // Read config BEFORE taking the mutable queue borrow.
+        let ordered = inner
+            .configs
+            .get(subscriber)
+            .map(|c| c.message_ordering)
+            .unwrap_or(false);
         let queue = inner
             .queues
             .get_mut(&(topic.to_string(), subscriber.to_string()))?;
+
+        // Ordered delivery: block when an earlier message is unsettled.
+        if ordered
+            && queue
+                .iter()
+                .any(|e| matches!(e.state, MessageState::Delivered { .. }))
+        {
+            return None;
+        }
 
         let entry = queue
             .iter_mut()
@@ -276,6 +328,73 @@ impl Broker {
             sc  = sub_count,
             pub = inner.publish_count,
             inf = inner.in_flight.len(),
+        )
+    }
+
+    /// Detailed JSON for one subscription's queues and config.
+    pub fn subscription_json(&self, topic: &str, subscriber: &str) -> Option<String> {
+        let inner = self.0.lock().unwrap();
+        if !inner
+            .subscriptions
+            .get(topic)?
+            .iter()
+            .any(|s| s == subscriber)
+        {
+            return None;
+        }
+        let key = (topic.to_string(), subscriber.to_string());
+        let cfg = inner.configs.get(subscriber);
+        let pending = inner
+            .queues
+            .get(&key)
+            .map(|q| {
+                q.iter()
+                    .filter(|e| matches!(e.state, MessageState::Pending))
+                    .count()
+            })
+            .unwrap_or(0);
+        let dlq_len = inner.dlq.get(&key).map(|q| q.len()).unwrap_or(0);
+        Some(format!(
+            r#"{{"topic":"{t}","subscriber":"{s}","pending":{p},"dlq":{d},"max_retries":{mr},"message_ordering":{mo}}}"#,
+            t = topic,
+            s = subscriber,
+            p = pending,
+            d = dlq_len,
+            mr = cfg.map(|c| c.max_retries).unwrap_or(3),
+            mo = cfg.map(|c| c.message_ordering).unwrap_or(false),
+        ))
+    }
+
+    /// List all subscriptions as JSON array items.
+    pub fn subscriptions_json(&self) -> String {
+        let inner = self.0.lock().unwrap();
+        let mut pairs: Vec<(&String, &String)> = inner
+            .subscriptions
+            .iter()
+            .flat_map(|(t, subs)| subs.iter().map(move |s| (t, s)))
+            .collect();
+        pairs.sort();
+        let items: Vec<String> = pairs
+            .iter()
+            .map(|(t, s)| format!(r#"{{"topic":"{t}","subscriber":"{s}"}}"#))
+            .collect();
+        format!(r#"{{"subscriptions":[{}]}}"#, items.join(","))
+    }
+
+    /// Messages currently sitting in the DLQ for (topic, subscriber).
+    pub fn dlq_messages_json(&self, topic: &str, subscriber: &str) -> String {
+        let inner = self.0.lock().unwrap();
+        let msgs = inner
+            .dlq
+            .get(&(topic.to_string(), subscriber.to_string()))
+            .cloned()
+            .unwrap_or_default();
+        let items: Vec<String> = msgs.iter().map(|m| m.to_json()).collect();
+        format!(
+            r#"{{"topic":"{t}","subscriber":"{s}","messages":[{items}]}}"#,
+            t = topic,
+            s = subscriber,
+            items = items.join(",")
         )
     }
 }
@@ -400,5 +519,109 @@ mod tests {
     fn pull_returns_none_empty_queue() {
         let b = basic_broker();
         assert!(b.pull("orders", "billing").is_none());
+    }
+
+    #[test]
+    fn ordered_subscription_blocks_on_inflight_head() {
+        let b = Broker::new();
+        b.subscribe(
+            "events",
+            "seq",
+            SubscriptionConfig {
+                message_ordering: true,
+                ..Default::default()
+            },
+        );
+        let m1 = Message::new("events", r#"{"n":1}"#);
+        let m2 = Message::new("events", r#"{"n":2}"#);
+        assert_eq!(b.publish(m1), 1);
+        assert_eq!(b.publish(m2), 2);
+
+        // First pull OK; second must block while m1 is unacked.
+        let first = b.pull("events", "seq").expect("first message");
+        assert_eq!(first.payload, r#"{"n":1}"#);
+        assert!(b.pull("events", "seq").is_none(), "ordering must block");
+
+        // Settle the head — next pull now yields m2.
+        assert!(b.ack(&first.id));
+        let second = b.pull("events", "seq").expect("second after ack");
+        assert_eq!(second.payload, r#"{"n":2}"#);
+    }
+
+    #[test]
+    fn unordered_subscription_allows_parallel_inflight() {
+        let b = basic_broker(); // default config: message_ordering false
+        b.publish(Message::new("orders", r#"{"n":1}"#));
+        b.publish(Message::new("orders", r#"{"n":2}"#));
+        assert!(b.pull("orders", "billing").is_some());
+        assert!(
+            b.pull("orders", "billing").is_some(),
+            "unordered keeps flowing"
+        );
+    }
+
+    #[test]
+    fn dlq_messages_json_lists_dead_letters() {
+        let b = Broker::new();
+        b.subscribe(
+            "jobs",
+            "w",
+            SubscriptionConfig {
+                max_retries: 0,
+                ..Default::default()
+            },
+        );
+        b.publish(Message::new("jobs", r#"{"t":1}"#));
+        let msg = b.pull("jobs", "w").unwrap();
+        b.nack(&msg.id, "boom");
+        let json = b.dlq_messages_json("jobs", "w");
+        assert!(
+            json.contains(r#"{"t":1}"#),
+            "dead letter payload missing: {json}"
+        );
+    }
+
+    #[test]
+    fn subscriptions_json_lists_pairs() {
+        let b = basic_broker();
+        let json = b.subscriptions_json();
+        assert!(json.contains(r#""topic":"orders","subscriber":"billing""#));
+        assert!(json.contains(r#""topic":"orders","subscriber":"shipping""#));
+    }
+
+    #[test]
+    fn subscribe_is_idempotent_no_double_delivery() {
+        let b = Broker::new();
+        b.subscribe("orders", "billing", SubscriptionConfig::default());
+        b.subscribe("orders", "billing", SubscriptionConfig::default());
+        assert_eq!(
+            b.subscriber_count("orders"),
+            1,
+            "resubscribe must not duplicate"
+        );
+        b.publish(Message::new("orders", r#"{"n":1}"#));
+        assert_eq!(
+            b.queue_depth("orders", "billing"),
+            1,
+            "duplicate subscription must not double-enqueue"
+        );
+    }
+
+    #[test]
+    fn subscriber_count_reflects_attached_subscribers() {
+        let b = basic_broker();
+        assert_eq!(b.subscriber_count("orders"), 2);
+        assert_eq!(b.subscriber_count("nope"), 0);
+    }
+
+    #[test]
+    fn message_to_json_without_extras_is_valid_object() {
+        let json = Message::new("t", "null").to_json();
+        assert!(json.starts_with('{') && json.ends_with('}'), "got: {json}");
+        assert!(
+            !json.contains(",}"),
+            "trailing comma makes invalid JSON: {json}"
+        );
+        assert!(json.contains(r#""id":"msg-"#));
     }
 }
