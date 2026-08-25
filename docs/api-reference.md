@@ -98,6 +98,14 @@ Unauthorized requests get `401` with body `{"error":"unauthenticated","message":
 | POST | `/api/v1/secrets/get` | Display value (redacted unless reveal) |
 | POST | `/api/v1/secrets/check` | Verify named secrets resolve (409 on missing) |
 | DELETE | `/api/v1/secrets/:name` | Remove secret from registry |
+| GET | `/api/v1/infra` | Full infra snapshot (env/services/databases/tls) |
+| POST | `/api/v1/infra/env` | Set env var (empty value removes) |
+| DELETE | `/api/v1/infra/env` | Clear all env vars |
+| POST | `/api/v1/infra/services` | Register/replace service endpoint |
+| GET | `/api/v1/infra/services` | List discovered services |
+| POST | `/api/v1/infra/databases` | Upsert database config (validated) |
+| GET | `/api/v1/infra/databases` | List database configs |
+| POST | `/api/v1/infra/tls` | Set gateway TLS status |
 
 ---
 
@@ -466,6 +474,66 @@ returns `409 {"error":"secret not resolvable"}` on reveal. Unknown names →
 
 All resolve → `200 {"ok":true,...}`. Any missing →
 `409 {"ok":false,"missing":["stripe_key"],"results":[...]}`.
+
+---
+
+## Infra Config
+
+Runtime infrastructure configuration (Encore `infra.Config` parity): env
+vars, discovered services, database configs, and gateway TLS status. All
+state lives in the daemon snapshot; `GET /api/v1/infra` returns it in full.
+
+### GET /api/v1/infra
+
+```json
+{"env_vars":{"LOG_LEVEL":"debug"},"services":[],"databases":[],"tls":{"configured":false}}
+```
+
+Env vars are always sorted; empty value on set removes the var.
+
+### POST /api/v1/infra/env
+
+```json
+{"name": "LOG_LEVEL", "value": "debug"}   → 200 {"message":"env updated"}
+{"name": "LOG_LEVEL", "value": ""}        → removes the var
+```
+
+### POST /api/v1/infra/services
+
+Register or replace a service endpoint:
+
+```json
+{"name": "auth", "addr": "127.0.0.1:9001"} → 200 {"message":"service registered","name":"auth"}
+```
+
+Re-registering an existing name updates its addr in place. Empty name/addr → `400`.
+
+### GET /api/v1/infra/services
+
+`{"services":[{"name":"auth","addr":"127.0.0.1:9001"}]}`
+
+### POST /api/v1/infra/databases
+
+```json
+{"name": "main", "engine": "postgres", "host": "localhost", "port": 5432}
+→ 200 {"message":"database configured","name":"main","engine":"postgres"}
+```
+
+Validates engine ∈ {postgres, mysql, sqlite} and port 1-65535; violations → `400`.
+
+### GET /api/v1/infra/databases
+
+`{"databases":[{"name":"main","engine":"postgres","host":"localhost","port":5432}]}`
+
+### POST /api/v1/infra/tls
+
+```json
+{"enabled": true, "cert_path": "/certs/a.pem"}
+```
+
+Snapshot then reports `"tls":{"enabled":true,"cert":"/certs/a.pem"}`.
+Before any TLS update: `"tls":{"configured":false}`. Empty `cert_path`
+records enabled-with-no-cert.
 
 ---
 

@@ -17,6 +17,7 @@ mod cron;
 mod errors;
 mod go_codegen;
 mod http;
+mod infra_config;
 mod logger;
 mod metrics;
 mod metrics_exporters;

@@ -17,7 +17,7 @@
 | 📨 **Pub/Sub** | 95 | ~70 | ~10 | 15 |
 | 💾 **Caching** | 75 | ~55 | ~6 | 14 |
 | 🔒 **Secrets** | 45 | ~32 | ~4 | 9 |
-| ⚙️ **Infrastructure** | 200 | 0 | 0 | 200 |
+| ⚙️ **Infrastructure** | 200 | ~35 | ~9 | ~165 |
 | 🧪 **Testing** | 180 | 0 | 0 | 180 |
 | 📝 **Documentation** | 140 | 20 | 5 | 115 |
 | 🔧 **Tooling** | 185 | 10 | 0 | 175 |
@@ -354,32 +354,32 @@
 ---
 
 ### 8. Infrastructure Config (Commits 1549, 1701, 1716)
-**Status**: 🔴 Not Started  
+**Status**: 🟡 Core Complete (daemon emulation)  
 **Priority**: 🟡 Medium  
 **Effort**: 3-4 weeks
 
 #### Key Features
-- [ ] **Runtime Configuration** (commit 1549)
-  - Ejected image config
-  - Service discovery
-  - Environment variables
-  - Bridge commits: `TBD`
+- [x] **Runtime Configuration** (commit 1549)
+  - Ejected image config → `InfraConfig` registry in `daemon/src/infra_config.rs`
+  - Service discovery: register/replace endpoints, listed via `GET /api/v1/infra/services`
+  - Environment variables: sorted (BTreeMap), empty-value-removes semantics
+  - Bridge commits: infra_config module + /api/v1/infra/* surface (9 tests)
 
 - [ ] **Database Configuration** (commits 1701, 1861)
-  - Connection pooling
-  - External databases
-  - SSL/TLS configuration
-  - Bridge commits: `TBD`
+  - Connection pooling → n/a to daemon emulation (no live connections)
+  - External databases → ✅ emulated: upsert w/ engine+port validation (postgres|mysql|sqlite, port 1-65535)
+  - SSL/TLS configuration → ✅ emulated: TLS status object surfaced in snapshot
+  - Bridge commits: upsert_database validation + /api/v1/infra/databases
 
 - [ ] **Infrastructure Docs** (commits 1716, 1756, 1814)
-  - Config management
-  - Environment setup
-  - Bridge commits: `TBD`
+  - Config management → ✅ full snapshot at GET /api/v1/infra
+  - Environment setup → ✅ env var set/clear roundtrip tested
+  - Bridge commits: api-reference.md Infra Config section
 
-- [ ] **TLS Support** (commits 1227-1229)
-  - Certificate handling
-  - TLS configuration
-  - Bridge commits: `TBD`
+- [x] **TLS Support** (commits 1227-1229)
+  - Certificate handling → emulated as status record (enabled + cert path)
+  - TLS configuration → POST /api/v1/infra/tls, reflected in snapshot
+  - Bridge commits: set_tls + tls_json shape pinned by tests
 
 #### Related Encore Commits
 ```

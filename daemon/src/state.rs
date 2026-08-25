@@ -13,6 +13,7 @@ use protocol::DaemonMode;
 
 use crate::auth::AuthRegistry;
 use crate::cache::CacheRegistry;
+use crate::infra_config::InfraConfig;
 use crate::metrics::Registry as MetricsRegistry;
 use crate::middleware::MiddlewareRegistry;
 use crate::pubsub::Broker;
@@ -230,6 +231,8 @@ pub struct State {
     pub storage: StorageRegistry,
     /// Cache keyspaces (Encore `RedisCluster` in-memory mode).
     pub cache: CacheRegistry,
+    /// Runtime infra config (env vars, discovery, db, tls).
+    pub infra: InfraConfig,
     /// Monotonically increasing trace ID counter.
     trace_counter: u64,
     /// RNG state for sampling (simple LCG).
@@ -269,6 +272,7 @@ impl State {
             txs: TxRegistry::new(),
             storage: StorageRegistry::new(),
             cache: CacheRegistry::new(),
+            infra: InfraConfig::new(),
             trace_counter: 0,
             rng_state: 12345678901234567,
         }

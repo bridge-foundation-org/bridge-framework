@@ -748,6 +748,16 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("POST", "/api/v1/pubsub/nack") => pubsub_nack(req, state),
         ("GET", p) if p.starts_with("/api/v1/pubsub/dlq/") => pubsub_dlq(state, &req.path),
 
+        // ── Infra config ──────────────────────────────────────────────
+        ("GET", "/api/v1/infra") => infra_show(state),
+        ("POST", "/api/v1/infra/env") => infra_env_set(req, state),
+        ("DELETE", "/api/v1/infra/env") => infra_env_clear(state),
+        ("GET", "/api/v1/infra/services") => infra_services(state),
+        ("POST", "/api/v1/infra/services") => infra_service_register(req, state),
+        ("GET", "/api/v1/infra/databases") => infra_databases(state),
+        ("POST", "/api/v1/infra/databases") => infra_database_upsert(req, state),
+        ("POST", "/api/v1/infra/tls") => infra_tls_set(req, state),
+
         // ── Secrets management ────────────────────────────────────────────
         ("GET", "/api/v1/secrets") => secrets_list(state),
         ("POST", "/api/v1/secrets/set") => secrets_set(req, state),
@@ -2371,6 +2381,94 @@ fn pubsub_dlq(state: &SharedState, full_path: &str) -> String {
     };
     let g = state.lock().unwrap();
     ok(&g.pubsub.dlq_messages_json(&topic, &subscriber))
+}
+
+// ── Infra config ──────────────────────────────────────────────────────
+
+fn infra_show(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.infra.to_json())
+}
+
+/// POST /api/v1/infra/env — `{"name":"X","value":"v"}`; empty value removes.
+fn infra_env_set(req: &Request, state: &SharedState) -> String {
+    let name = extract_json_field(req.body.trim(), "name").unwrap_or_default();
+    if name.is_empty() {
+        return bad_request("name required");
+    }
+    let value = extract_json_field(req.body.trim(), "value").unwrap_or_default();
+    state.lock().unwrap().infra.set_env_var(&name, &value);
+    ok(r#"{"message":"env updated"}"#)
+}
+
+fn infra_env_clear(state: &SharedState) -> String {
+    state.lock().unwrap().infra.env_vars.clear();
+    ok(r#"{"message":"env cleared"}"#)
+}
+
+fn infra_services(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.infra.service_json())
+}
+
+/// POST /api/v1/infra/services — `{"name":"auth","addr":"127.0.0.1:9001"}`.
+fn infra_service_register(req: &Request, state: &SharedState) -> String {
+    let b = req.body.trim();
+    let name = extract_json_field(b, "name").unwrap_or_default();
+    let addr = extract_json_field(b, "addr").unwrap_or_default();
+    let mut g = state.lock().unwrap();
+    if !g.infra.register_service(&name, &addr) {
+        drop(g);
+        return bad_request("valid name and addr required (addr needs :port)");
+    }
+    drop(g);
+    ok(&format!(
+        r#"{{"message":"service registered","name":"{name}"}}"#
+    ))
+}
+
+fn infra_databases(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.infra.databases_json())
+}
+
+/// POST /api/v1/infra/databases —
+/// `{"name":"db","engine":"postgres","host":"localhost","port":5432}`.
+fn infra_database_upsert(req: &Request, state: &SharedState) -> String {
+    let b = req.body.trim();
+    let name = extract_json_field(b, "name").unwrap_or_default();
+    let engine = extract_json_field(b, "engine").unwrap_or("postgres".into());
+    let host = extract_json_field(b, "host").unwrap_or("localhost".into());
+    let port = extract_json_field(b, "port")
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(5432);
+    match state
+        .lock()
+        .unwrap()
+        .infra
+        .upsert_database(&name, &engine, &host, port)
+    {
+        Ok(()) => ok(&format!(
+            r#"{{"message":"database configured","name":"{name}","engine":"{engine}"}}"#
+        )),
+        Err(e) => bad_request(&e),
+    }
+}
+
+/// POST /api/v1/infra/tls — `{"enabled":true,"cert_path":"/certs/a.pem"}`.
+fn infra_tls_set(req: &Request, state: &SharedState) -> String {
+    let enabled = extract_json_field(req.body.trim(), "enabled")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let cert = extract_json_field(req.body.trim(), "cert_path");
+    state
+        .lock()
+        .unwrap()
+        .infra
+        .set_tls(enabled, cert.filter(|c| !c.is_empty()));
+    ok(&format!(
+        r#"{{"message":"tls updated","enabled":{enabled}}}"#
+    ))
 }
 
 // ── Secrets management ────────────────────────────────────────────────────
@@ -4152,6 +4250,105 @@ mod tests {
         assert!(
             r("POST", "/api/v1/secrets/get", r#"{"name":"ghost"}"#).contains("404"),
             "unknown secret must 404"
+        );
+    }
+
+    #[test]
+    fn infra_env_set_get_remove_roundtrip() {
+        let s = state();
+        rs(
+            "POST",
+            "/api/v1/infra/env",
+            r#"{"name":"LOG_LEVEL","value":"debug"}"#,
+            &s,
+        );
+        let snap = rs("GET", "/api/v1/infra", "", &s);
+        assert!(snap.contains(r#""LOG_LEVEL":"debug""#), "got: {snap}");
+        rs(
+            "POST",
+            "/api/v1/infra/env",
+            r#"{"name":"LOG_LEVEL","value":""}"#,
+            &s,
+        );
+        assert!(
+            !rs("GET", "/api/v1/infra", "", &s).contains("LOG_LEVEL"),
+            "empty removes"
+        );
+        assert!(
+            rs("POST", "/api/v1/infra/env", r#"{"value":"x"}"#, &s).contains("400"),
+            "name req"
+        );
+    }
+
+    #[test]
+    fn infra_services_discovery_register_and_update() {
+        let s = state();
+        rs(
+            "POST",
+            "/api/v1/infra/services",
+            r#"{"name":"auth","addr":"127.0.0.1:9001"}"#,
+            &s,
+        );
+        rs(
+            "POST",
+            "/api/v1/infra/services",
+            r#"{"name":"auth","addr":"10.0.0.2:9001"}"#,
+            &s,
+        );
+        let list = rs("GET", "/api/v1/infra/services", "", &s);
+        assert!(list.contains("10.0.0.2:9001"), "updated in place: {list}");
+        assert_eq!(list.matches("\"name\"").count(), 1, "no duplicate");
+        assert!(
+            rs(
+                "POST",
+                "/api/v1/infra/services",
+                r#"{"name":"x","addr":""}"#,
+                &s
+            )
+            .contains("400"),
+            "empty addr must 400"
+        );
+    }
+
+    #[test]
+    fn infra_database_validation_and_listing() {
+        let s = state();
+        let okc = rs(
+            "POST",
+            "/api/v1/infra/databases",
+            r#"{"name":"main","engine":"postgres","host":"db.local","port":5433}"#,
+            &s,
+        );
+        assert!(okc.contains("200"), "got: {okc}");
+        let bad = rs(
+            "POST",
+            "/api/v1/infra/databases",
+            r#"{"name":"main","engine":"oracle","host":"h","port":1}"#,
+            &s,
+        );
+        assert!(bad.contains("400"), "unknown engine: {bad}");
+        let list = rs("GET", "/api/v1/infra/databases", "", &s);
+        assert!(list.contains(r#""port":5433"#), "got: {list}");
+    }
+
+    #[test]
+    fn infra_tls_status_transitions() {
+        let snap = rs("GET", "/api/v1/infra", "", &state());
+        assert!(
+            snap.contains(r#""tls":{"configured":false}"#),
+            "got: {snap}"
+        );
+        let s = state();
+        rs(
+            "POST",
+            "/api/v1/infra/tls",
+            r#"{"enabled":true,"cert_path":"/certs/a.pem"}"#,
+            &s,
+        );
+        assert!(
+            rs("GET", "/api/v1/infra", "", &s)
+                .contains(r#""tls":{"enabled":true,"cert":"/certs/a.pem"}"#),
+            "tls surfaced"
         );
     }
 }
