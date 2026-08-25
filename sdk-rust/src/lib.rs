@@ -22,6 +22,8 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+pub mod dev;
+
 /// Current manifest schema version. Pinned by tests against the schema
 /// crate; bumping here without the owner crate is a parity break.
 pub const SCHEMA_VERSION: u32 = 1;

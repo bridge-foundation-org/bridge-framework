@@ -54,6 +54,24 @@ println!("{}", lock.to_lock());
 lock.verify()?; // re-checks the stamped content_hash
 ```
 
+## Dev-mode endpoints
+
+Under `bridge dev`, generated clients resolve infrastructure endpoints
+without manual config — capability-based, with a deterministic order:
+
+1. explicit override argument (tests),
+2. the env vars `bridge dev` injects (`AWS_ENDPOINT_URL`, `DATABASE_URL`, ...),
+3. documented defaults (Floci port contract: AWS :4566, Azure :4577, GCP :4588, OCI :4599; local Postgres :4510).
+
+```rust
+use bridge_sdk_rust::dev;
+
+let s3 = dev::storage_endpoint(None)?;          // http://localhost:4566 in dev
+let db = dev::db_url(None)?;                    // errors naming DATABASE_URL if unset
+```
+
+The port constants live in `dev::ports` and are pinned by tests on both
+sides (CLI planner and SDK resolver) so they cannot drift apart.
 ## Develop
 
 ```sh
