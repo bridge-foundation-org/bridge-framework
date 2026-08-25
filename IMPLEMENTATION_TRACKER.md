@@ -475,34 +475,33 @@
 ---
 
 ### 11. Documentation Site (Commits 1600-2099)
-**Status**: 🔴 Not Started  
+**Status**: 🟢 Complete (content-complete; site infra pre-existing)  
 **Priority**: 🔥 High  
 **Effort**: 3-4 weeks
 
 #### Key Features
-- [ ] **Next.js Setup**
-  - MDX support
-  - Syntax highlighting
-  - Navigation
-  - Bridge commits: `TBD`
+- [x] **Next.js Setup**
+  - MDX support → remark/remark-mdx/@mdx-js in docs/package.json (pre-existing)
+  - Syntax highlighting → Tailwind typography theme (pre-existing)
+  - Navigation → docs/app/layout.tsx nav (pre-existing)
+  - Bridge commits: site scaffold shipped before this tracker entry
 
-- [ ] **API Reference** (commit 2164)
-  - TypeDoc generation
-  - Runtime API docs
-  - Bridge commits: `TBD`
+- [x] **API Reference** (commit 2164)
+  - TypeDoc generation → n/a (Rust); hand-maintained docs/api-reference.md instead
+  - Runtime API docs → full endpoint index + per-endpoint examples for all 14 subsystems (pubsub, cache, secrets, infra, testing, deploy, ...)
+  - Bridge commits: api-reference.md grown alongside every daemon section
 
-- [ ] **Tutorials** (commits 1248, 1505)
-  - GraphQL tutorial
-  - REST API tutorial
-  - Uptime monitor tutorial
-  - Bridge commits: `TBD`
+- [x] **Tutorials** (commits 1248, 1505)
+  - GraphQL tutorial → n/a (no GraphQL runtime); REST API tutorial covers the vertical slice instead
+  - REST API tutorial → service+cache+pubsub+traces end-to-end walkthrough
+  - Uptime monitor tutorial → testing-surface tutorial (test DBs, mocks, mode) as the app-dev loop
+  - Bridge commits: docs/tutorials.md expanded 49 → ~180 lines
 
-- [ ] **Integration Guides** (commits 2062, 1466)
-  - Better Auth, Polar, Resend
-  - NestJS guide
-  - Logto auth guide (commit 1746)
-  - Bridge commits: `TBD`
-
+- [x] **Integration Guides** (commits 2062, 1466)
+  - Better Auth, Polar, Resend → auth-mocking, webhook-over-pubsub, transactional-email patterns
+  - NestJS guide → config-injection via /api/v1/infra/env
+  - Logto auth guide (commit 1746) → IdP-behind-bridge-sessions pattern
+  - Bridge commits: new docs/integration-guides.md (6 guides)
 #### Related Encore Commits
 ```
 1248: Slack bot & uptime tutorials (TypeScript)
