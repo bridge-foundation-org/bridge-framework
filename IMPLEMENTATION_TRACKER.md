@@ -101,11 +101,11 @@
   - Custom validators (built-in regex engine + structural isEmail/isURL)
   - Bridge commits: `daemon/src/validation.rs` — rule vocabulary mirrors `encore.dev/validate` (`required`, `minLen`, `maxLen`, `min`, `max`, `matchesRegexp`, `startsWith`, `endsWith`, `isEmail`, `isURL`); per-endpoint schemas keyed `METHOD:/path`; built-in backtracking regex engine (classes, groups, alternation, quantifiers, anchors, zero-width guard) with JS `.test()` semantics; registry API `POST/GET/DELETE /api/v1/validate`; enforcement gate short-circuits requests with 400 + structured violations.
 
-- [ ] **Database Transactions** (commit 1800)
-  - Transaction support
-  - Isolation levels
-  - Rollback handling
-  - Bridge commits: `TBD`
+- [x] **Database Transactions** (commit 1800) — KV-store tx lifecycle done; Postgres passthrough open
+  - Transaction support ✅ (`TxRegistry`: begin/enqueue/commit/rollback over the daemon KV store — put, del, del_matching glob ops applied in order on commit)
+  - Isolation levels ✅ (read_uncommitted / read_committed / repeatable_read / serializable accepted and recorded per transaction)
+  - Rollback handling ✅ (queued ops discarded; terminal-state guards reject double commit / enqueue-after-commit; `GET /api/v1/tx/prune` clears finished)
+  - Bridge commits: `daemon/src/transactions.rs` + http.rs endpoints — `POST/GET /api/v1/tx` (begin with optional isolation / list), `PUT /api/v1/tx/{id}` (queue op), `POST /api/v1/tx/{id}/commit`, `POST /api/v1/tx/{id}/rollback`, `GET /api/v1/tx/prune`. Legacy bookkeeping `TransactionManager` retained.
 
 - [~] **Raw Endpoints** (commits 1218-1222) — static serving + fallback done; custom raw handlers open
   - Custom request handling (open — raw handler registration not yet implemented)
@@ -132,17 +132,17 @@
 **Effort**: 3-4 weeks
 
 #### Key Features
-- [ ] **Auth Handlers** (commits 1426, 1511)
-  - JWT parsing
-  - Session management
-  - Custom auth logic
-  - Bridge commits: `TBD`
+- [x] **Auth Handlers** (commits 1426, 1511)
+  - JWT parsing ✅ (HS256 sign/verify: base64url codec, typed registered claims + flat custom claims, alg-pinned header check, constant-time signature compare, exp enforcement)
+  - Session management ✅ (`issue_jwt` registers live bearer sessions; opaque tokens supported alongside)
+  - Custom auth logic ✅ (custom claims round-trip; `authenticate()` — strict: JWT-shaped tokens must verify cryptographically, never fall back to registry)
+  - Bridge commits: `daemon/src/auth.rs` + http.rs endpoints — `POST /api/v1/auth/token` (issue; `BRIDGE_JWT_SECRET` env or ephemeral default), `GET /api/v1/auth/whoami` (401 on missing/invalid/tampered), `DELETE /api/v1/auth/token` (revoke). HMAC-SHA256 lives in `staticfiles::hmac_sha256` (shared with ETags).
 
-- [ ] **Auth Data** (commits 1819, 1969)
-  - User data propagation
-  - Auth overrides in tests
-  - Optional auth params
-  - Bridge commits: `TBD`
+- [~] **Auth Data** (commits 1819, 1969) — propagation done; test overrides open
+  - User data propagation ✅ (`JwtClaims::to_auth_data`: sub→user_id, scope→roles, email claim→email; `whoami` returns full identity JSON)
+  - Auth overrides in tests (open)
+  - Optional auth params (open)
+  - Bridge commits: `daemon/src/auth.rs`
 
 - [ ] **OAuth Integration**
   - OAuth2 flows

@@ -11,6 +11,7 @@ use compiler::BridgeFile;
 use db::Db;
 use protocol::DaemonMode;
 
+use crate::auth::AuthRegistry;
 use crate::metrics::Registry as MetricsRegistry;
 use crate::middleware::MiddlewareRegistry;
 use crate::pubsub::Broker;
@@ -18,6 +19,7 @@ use crate::ratelimit::RateLimiter;
 use crate::secrets::SecretsRegistry;
 use crate::staticfiles::StaticRegistry;
 use crate::streaming::StreamRegistry;
+use crate::transactions::TxRegistry;
 use crate::validation::ValidationRegistry;
 use crate::watcher::WatchRegistry;
 
@@ -218,6 +220,10 @@ pub struct State {
     pub validation: ValidationRegistry,
     /// Static file mounts.
     pub static_files: StaticRegistry,
+    /// JWT sessions + opaque tokens (auth pipeline).
+    pub auth: AuthRegistry,
+    /// Store-backed transaction registry.
+    pub txs: TxRegistry,
     /// Monotonically increasing trace ID counter.
     trace_counter: u64,
     /// RNG state for sampling (simple LCG).
@@ -253,6 +259,8 @@ impl State {
             rate_limiter: RateLimiter::new(),
             validation: ValidationRegistry::new(),
             static_files: StaticRegistry::new(),
+            auth: AuthRegistry::new(),
+            txs: TxRegistry::new(),
             trace_counter: 0,
             rng_state: 12345678901234567,
         }

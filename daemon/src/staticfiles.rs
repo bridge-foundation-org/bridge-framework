@@ -113,8 +113,9 @@ pub fn compute_etag(bytes: &[u8]) -> String {
     )
 }
 
-/// Minimal SHA-256 (FIPS 180-4) — enough for ETags without pulling a crate in.
-pub fn sha256_hex(data: &[u8]) -> String {
+/// Minimal SHA-256 (FIPS 180-4) — enough for ETags/HMAC without pulling a crate in.
+/// Returns raw digest bytes; see [`sha256_hex`] for the hex form.
+pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
         0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -190,7 +191,41 @@ pub fn sha256_hex(data: &[u8]) -> String {
         h[6] = h[6].wrapping_add(g);
         h[7] = h[7].wrapping_add(hh);
     }
-    h.iter().map(|x| format!("{x:08x}")).collect()
+    let mut out = [0u8; 32];
+    for (i, x) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&x.to_be_bytes());
+    }
+    out
+}
+
+/// Hex convenience wrapper over [`sha256_bytes`].
+pub fn sha256_hex(data: &[u8]) -> String {
+    sha256_bytes(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// HMAC-SHA256 (RFC 2104) — shared secret message authentication.
+/// Used by JWT HS256 signing.
+pub fn hmac_sha256(secret: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let mut key = [0u8; BLOCK];
+    if secret.len() > BLOCK {
+        key[..32].copy_from_slice(&sha256_bytes(secret));
+    } else {
+        key[..secret.len()].copy_from_slice(secret);
+    }
+    let ipad: Vec<u8> = key.iter().map(|b| b ^ 0x36).collect();
+    let opad: Vec<u8> = key.iter().map(|b| b ^ 0x5c).collect();
+    let mut inner = Vec::with_capacity(BLOCK + 32);
+    inner.extend_from_slice(&ipad);
+    inner.extend_from_slice(message);
+    let inner_hash = sha256_bytes(&inner);
+    let mut outer = Vec::with_capacity(BLOCK + 32);
+    outer.extend_from_slice(&opad);
+    outer.extend_from_slice(&inner_hash);
+    sha256_bytes(&outer)
 }
 
 // ── Path traversal defense ────────────────────────────────────────────────────

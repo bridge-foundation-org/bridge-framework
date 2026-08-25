@@ -17,12 +17,14 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
+use crate::auth::{self, bearer_from_header};
 use crate::middleware::{MiddlewareBuilder, MiddlewareContext, Scope};
 use crate::ratelimit::BucketKey;
 use crate::sqldb;
 use crate::state::{LogLevel, SharedState};
 use crate::staticfiles::{StaticMount, StaticResult};
 use crate::streaming;
+use crate::transactions;
 use crate::validation::{self, violations_json, Rule};
 
 // ── Request ID counter ────────────────────────────────────────────────────────
@@ -665,6 +667,23 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("GET", "/api/v1/static") => static_list(state),
         ("POST", "/api/v1/static") => static_register(req, state),
         ("DELETE", "/api/v1/static") => static_remove(req, state),
+
+        // ── Auth pipeline (JWT + sessions) ────────────────────────────────
+        ("POST", "/api/v1/auth/token") => auth_token_issue(req, state),
+        ("GET", p) if p.starts_with("/api/v1/auth/whoami") => auth_whoami(req, state),
+        ("DELETE", "/api/v1/auth/token") => auth_token_revoke(req, state),
+
+        // ── Transactions ──────────────────────────────────────────────────
+        ("GET", "/api/v1/tx") => tx_list(state),
+        ("POST", "/api/v1/tx") => tx_begin(req, state),
+        ("PUT", p) if p.starts_with("/api/v1/tx/") => tx_enqueue(req, state, p),
+        ("POST", p) if p.starts_with("/api/v1/tx/") && p.ends_with("/commit") => {
+            tx_commit(req, state, p)
+        }
+        ("POST", p) if p.starts_with("/api/v1/tx/") && p.ends_with("/rollback") => {
+            tx_rollback(state, p)
+        }
+        ("GET", "/api/v1/tx/prune") => tx_prune(state),
 
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
@@ -1450,6 +1469,207 @@ fn parse_flat_json_object(obj: &str) -> Vec<(String, String)> {
             ))
         })
         .collect()
+}
+
+// ── Auth pipeline handlers ────────────────────────────────────────────────────
+
+/// JWT secret: `BRIDGE_JWT_SECRET` env or an ephemeral per-process default.
+fn jwt_secret() -> Vec<u8> {
+    std::env::var("BRIDGE_JWT_SECRET")
+        .unwrap_or_else(|_| "bridge-dev-secret-do-not-use-in-prod".to_string())
+        .into_bytes()
+}
+
+/// Issue a JWT session.
+///
+/// Body: `{"sub":"user-1","ttl":3600,"iss":"bridge","claims":{"role":"admin"}}`
+/// Returns the signed token; it is also registered as a live bearer session.
+fn auth_token_issue(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    if body.is_empty() {
+        return bad_request("body required");
+    }
+    let sub = match extract_json_field(body, "sub") {
+        Some(s) if !s.is_empty() => s,
+        _ => return bad_request("sub is required"),
+    };
+    let ttl = extract_json_field(body, "ttl")
+        .and_then(|t| t.parse::<u64>().ok())
+        .unwrap_or(3600);
+
+    let mut claims = auth::JwtClaims::new(sub).with_ttl(ttl);
+    if let Some(iss) = extract_json_field(body, "iss") {
+        claims = claims.with_issuer(iss);
+    }
+    // Optional flat custom claims object: {"role":"admin","org":"acme"}
+    if let Some(obj) = extract_json_object(body, "claims") {
+        for (k, v) in parse_flat_json_object(&obj) {
+            if !matches!(k.as_str(), "sub" | "iss" | "exp" | "iat" | "scope") {
+                claims = claims.with_claim(k, v);
+            }
+        }
+    }
+
+    let token = state.lock().unwrap().auth.issue_jwt(claims, &jwt_secret());
+    ok(&format!(
+        r#"{{"token":"{token}","token_type":"Bearer","expires_in":{ttl}}}"#
+    ))
+}
+
+/// Whoami: authenticate the request's bearer token and report identity.
+/// JWTs verify cryptographically (stateless); opaque tokens hit the registry.
+fn auth_whoami(req: &Request, state: &SharedState) -> String {
+    let Some(token) = bearer_from_header(req.header("authorization")) else {
+        return json_response(401, r#"{"error":"missing bearer token"}"#);
+    };
+    let result = {
+        let g = state.lock().unwrap();
+        g.auth.authenticate(token, &jwt_secret())
+    };
+    match result {
+        Ok(data) => ok(&data.to_json()),
+        Err(e) => json_response(401, &format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+/// Revoke a bearer session (opaque or JWT) from the registry.
+fn auth_token_revoke(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let token = if body.starts_with('{') {
+        extract_json_field(body, "token")
+    } else if let Some(t) = bearer_from_header(req.header("authorization")) {
+        Some(t.to_string())
+    } else {
+        Some(body.trim_matches('"').to_string())
+    };
+    match token {
+        Some(t) if !t.is_empty() => {
+            state.lock().unwrap().auth.revoke_bearer(&t);
+            ok(r#"{"message":"token revoked"}"#)
+        }
+        _ => bad_request("token required (body or Authorization header)"),
+    }
+}
+
+// ── Transaction handlers ──────────────────────────────────────────────────────
+
+fn tx_list(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.txs.to_json())
+}
+
+/// Begin: body `{"id":"tx1","isolation":"serializable"}` — isolation optional.
+fn tx_begin(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let id = if body.starts_with('{') {
+        extract_json_field(body, "id")
+    } else {
+        Some(body.trim_matches('"').to_string())
+    };
+    let Some(id) = id.filter(|i| !i.is_empty()) else {
+        return bad_request("id required");
+    };
+    let isolation = body
+        .starts_with('{')
+        .then(|| extract_json_field(body, "isolation"))
+        .flatten()
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    let iso = match isolation.as_str() {
+        "" | "read_committed" => transactions::IsolationLevel::ReadCommitted,
+        "read_uncommitted" => transactions::IsolationLevel::ReadUncommitted,
+        "repeatable_read" => transactions::IsolationLevel::RepeatableRead,
+        "serializable" => transactions::IsolationLevel::Serializable,
+        other => return bad_request(&format!("unknown isolation level {other:?}")),
+    };
+    let err = state.lock().unwrap().txs.begin(id.clone(), iso).err();
+    match err {
+        Some(e) => json_response(409, &format!(r#"{{"error":"{e}"}}"#)),
+        None => ok(&format!(
+            r#"{{"message":"transaction started","id":"{id}","isolation":"{}"}}"#,
+            iso.as_str()
+        )),
+    }
+}
+
+/// Queue an op into `PUT /api/v1/tx/{id}`.
+/// Body: `{"op":"put","ns":"app","key":"k","value":"v"}` |
+///       `{"op":"del","ns":"app","key":"k"}` |
+///       `{"op":"del_matching","ns":"app","pattern":"tmp:*"}`
+fn tx_enqueue(req: &Request, state: &SharedState, path: &str) -> String {
+    let tx_id = path.trim_start_matches("/api/v1/tx/");
+    let body = req.body.trim();
+    if body.is_empty() || !body.starts_with('{') {
+        return bad_request("JSON body required");
+    }
+    let kind = extract_json_field(body, "op").unwrap_or_else(|| "put".to_string());
+    let ns = extract_json_field(body, "ns").unwrap_or_else(|| "default".to_string());
+    let op = match kind.as_str() {
+        "put" => {
+            let (Some(key), Some(value)) = (
+                extract_json_field(body, "key"),
+                extract_json_field(body, "value"),
+            ) else {
+                return bad_request("put requires key and value");
+            };
+            transactions::StoreOp::Put { ns, key, value }
+        }
+        "del" => {
+            let Some(key) = extract_json_field(body, "key") else {
+                return bad_request("del requires key");
+            };
+            transactions::StoreOp::Del { ns, key }
+        }
+        "del_matching" => {
+            let Some(pattern) = extract_json_field(body, "pattern") else {
+                return bad_request("del_matching requires pattern");
+            };
+            transactions::StoreOp::DelMatching { ns, pattern }
+        }
+        other => return bad_request(&format!("unknown op {other:?} (put|del|del_matching)")),
+    };
+    let count = state.lock().unwrap().txs.enqueue(tx_id, op);
+    match count {
+        Ok(n) => ok(&format!(r#"{{"message":"operation queued","queued":{n}}}"#)),
+        Err(e) => json_response(404, &format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+fn tx_commit(req: &Request, state: &SharedState, path: &str) -> String {
+    let _ = req;
+    let tx_id = path
+        .trim_start_matches("/api/v1/tx/")
+        .trim_end_matches("/commit");
+    let g = state.lock().unwrap();
+    match g.txs.commit(tx_id, &g.store) {
+        Ok(n) => {
+            drop(g);
+            ok(&format!(r#"{{"message":"committed","operations":{n}}}"#))
+        }
+        Err(e) => {
+            let status = if e.contains("not found") { 404 } else { 409 };
+            drop(g);
+            json_response(status, &format!(r#"{{"error":"{e}"}}"#))
+        }
+    }
+}
+
+fn tx_rollback(state: &SharedState, path: &str) -> String {
+    let tx_id = path
+        .trim_start_matches("/api/v1/tx/")
+        .trim_end_matches("/rollback");
+    match state.lock().unwrap().txs.rollback(tx_id) {
+        Ok(n) => ok(&format!(r#"{{"message":"rolled back","discarded":{n}}}"#)),
+        Err(e) => {
+            let status = if e.contains("not found") { 404 } else { 409 };
+            json_response(status, &format!(r#"{{"error":"{e}"}}"#))
+        }
+    }
+}
+
+fn tx_prune(state: &SharedState) -> String {
+    let pruned = state.lock().unwrap().txs.prune_finished();
+    ok(&format!(r#"{{"message":"pruned","removed":{pruned}}}"#))
 }
 
 // ── Watch / hot-reload handlers ───────────────────────────────────────────────
