@@ -38,6 +38,7 @@ mod staticfiles;
 mod storage;
 mod streaming;
 mod tcp;
+mod testing;
 mod tracing;
 mod transactions;
 mod transport;

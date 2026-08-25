@@ -22,6 +22,7 @@ use crate::secrets::SecretsRegistry;
 use crate::staticfiles::StaticRegistry;
 use crate::storage::StorageRegistry;
 use crate::streaming::StreamRegistry;
+use crate::testing::TestRegistry;
 use crate::transactions::TxRegistry;
 use crate::validation::ValidationRegistry;
 use crate::watcher::WatchRegistry;
@@ -233,6 +234,8 @@ pub struct State {
     pub cache: CacheRegistry,
     /// Runtime infra config (env vars, discovery, db, tls).
     pub infra: InfraConfig,
+    /// Test harness state (databases, mocks, test mode).
+    pub testing: TestRegistry,
     /// Monotonically increasing trace ID counter.
     trace_counter: u64,
     /// RNG state for sampling (simple LCG).
@@ -273,6 +276,7 @@ impl State {
             storage: StorageRegistry::new(),
             cache: CacheRegistry::new(),
             infra: InfraConfig::new(),
+            testing: TestRegistry::new(),
             trace_counter: 0,
             rng_state: 12345678901234567,
         }

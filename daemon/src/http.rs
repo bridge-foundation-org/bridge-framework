@@ -758,6 +758,16 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("POST", "/api/v1/infra/databases") => infra_database_upsert(req, state),
         ("POST", "/api/v1/infra/tls") => infra_tls_set(req, state),
 
+        // ── Testing harness (Encore `testing` parity) ─────────────────
+        ("GET", "/api/v1/testing") => testing_show(state),
+        ("POST", "/api/v1/testing/mode/enter") => testing_mode_enter(req, state),
+        ("POST", "/api/v1/testing/mode/exit") => testing_mode_exit(state),
+        ("POST", "/api/v1/testing/databases") => testing_db_new(req, state),
+        ("DELETE", "/api/v1/testing/databases") => testing_db_cleanup(state),
+        ("POST", "/api/v1/testing/mocks/auth") => testing_mock_auth(req, state),
+        ("POST", "/api/v1/testing/mocks/services") => testing_mock_service(req, state),
+        ("DELETE", "/api/v1/testing/mocks") => testing_mocks_clear(state),
+
         // ── Secrets management ────────────────────────────────────────────
         ("GET", "/api/v1/secrets") => secrets_list(state),
         ("POST", "/api/v1/secrets/set") => secrets_set(req, state),
@@ -2469,6 +2479,83 @@ fn infra_tls_set(req: &Request, state: &SharedState) -> String {
     ok(&format!(
         r#"{{"message":"tls updated","enabled":{enabled}}}"#
     ))
+}
+
+// ── Testing harness (Encore `testing` parity) ─────────────────────────────
+
+fn testing_show(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.testing.to_json())
+}
+
+/// POST /api/v1/testing/mode/enter — `{"log_level":"warn"}`.
+fn testing_mode_enter(req: &Request, state: &SharedState) -> String {
+    let lvl = extract_json_field(req.body.trim(), "log_level").unwrap_or_default();
+    state.lock().unwrap().testing.enter_mode(&lvl);
+    ok(r#"{"message":"test mode active"}"#)
+}
+
+fn testing_mode_exit(state: &SharedState) -> String {
+    let was = state.lock().unwrap().testing.exit_mode();
+    if was {
+        ok(r#"{"message":"test mode exited"}"#)
+    } else {
+        not_found()
+    }
+}
+
+/// POST /api/v1/testing/databases — `{"name":"users","superuser":true}`.
+fn testing_db_new(req: &Request, state: &SharedState) -> String {
+    let name = extract_json_field(req.body.trim(), "name").unwrap_or_default();
+    let superuser = extract_json_field(req.body.trim(), "superuser")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    match state.lock().unwrap().testing.new_database(&name, superuser) {
+        Ok(ns) => ok(&format!(
+            r#"{{"namespace":"{ns}","superuser":{superuser}}}"#
+        )),
+        Err(e) => bad_request(&e),
+    }
+}
+
+fn testing_db_cleanup(state: &SharedState) -> String {
+    let n = state.lock().unwrap().testing.cleanup_databases();
+    ok(&format!(r#"{{"message":"cleaned up","destroyed":{n}}}"#))
+}
+
+/// POST /api/v1/testing/mocks/auth — `{"principal":"u_123"}`.
+fn testing_mock_auth(req: &Request, state: &SharedState) -> String {
+    let principal = extract_json_field(req.body.trim(), "principal").unwrap_or_default();
+    match state.lock().unwrap().testing.mock_auth(&principal) {
+        Ok(()) => ok(&format!(
+            r#"{{"message":"auth mocked","principal":"{principal}"}}"#
+        )),
+        Err(e) => bad_request(&e),
+    }
+}
+
+/// POST /api/v1/testing/mocks/services —
+/// `{"service":"auth","response":{"user":"u_1"}}` (response stored verbatim).
+fn testing_mock_service(req: &Request, state: &SharedState) -> String {
+    let b = req.body.trim();
+    let service = extract_json_field(b, "service").unwrap_or_default();
+    let response = extract_json_field(b, "response").unwrap_or_default();
+    match state
+        .lock()
+        .unwrap()
+        .testing
+        .mock_service(&service, &response)
+    {
+        Ok(()) => ok(&format!(
+            r#"{{"message":"service mocked","service":"{service}"}}"#
+        )),
+        Err(e) => bad_request(&e),
+    }
+}
+
+fn testing_mocks_clear(state: &SharedState) -> String {
+    let n = state.lock().unwrap().testing.clear_mocks();
+    ok(&format!(r#"{{"message":"mocks cleared","count":{n}}}"#))
 }
 
 // ── Secrets management ────────────────────────────────────────────────────
@@ -4349,6 +4436,110 @@ mod tests {
             rs("GET", "/api/v1/infra", "", &s)
                 .contains(r#""tls":{"enabled":true,"cert":"/certs/a.pem"}"#),
             "tls surfaced"
+        );
+    }
+
+    #[test]
+    fn testing_mode_enter_exit_and_snapshot() {
+        let s = state();
+        let snap0 = rs("GET", "/api/v1/testing", "", &s);
+        assert!(snap0.contains(r#""mode":{"active":false}"#), "got: {snap0}");
+        assert!(
+            rs(
+                "POST",
+                "/api/v1/testing/mode/enter",
+                r#"{"log_level":"warn"}"#,
+                &s
+            )
+            .contains("200"),
+            "enter must succeed"
+        );
+        assert!(
+            rs("GET", "/api/v1/testing", "", &s).contains(r#""log_level":"warn""#),
+            "level recorded"
+        );
+        assert!(
+            rs("POST", "/api/v1/testing/mode/exit", "", &s).contains("200"),
+            "exit must succeed"
+        );
+        assert!(
+            rs("POST", "/api/v1/testing/mode/exit", "", &s).contains("404"),
+            "double exit must 404"
+        );
+    }
+
+    #[test]
+    fn testing_database_isolation_and_cleanup() {
+        let s = state();
+        let d1 = rs(
+            "POST",
+            "/api/v1/testing/databases",
+            r#"{"name":"users","superuser":true}"#,
+            &s,
+        );
+        assert!(d1.contains(r#""namespace":"t1_users""#), "got: {d1}");
+        assert!(d1.contains(r#""superuser":true"#), "got: {d1}");
+        // Same base name → distinct namespace.
+        let d2 = rs(
+            "POST",
+            "/api/v1/testing/databases",
+            r#"{"name":"users"}"#,
+            &s,
+        );
+        assert!(d2.contains(r#""namespace":"t2_users""#), "got: {d2}");
+        // Empty name → 400.
+        assert!(
+            rs("POST", "/api/v1/testing/databases", "{}", &s).contains("400"),
+            "name required"
+        );
+        let cleanup = rs("DELETE", "/api/v1/testing/databases", "", &s);
+        assert!(cleanup.contains("\"destroyed\":2"), "got: {cleanup}");
+        assert!(
+            !rs("GET", "/api/v1/testing", "", &s).contains("\"namespace\""),
+            "all gone"
+        );
+    }
+
+    #[test]
+    fn testing_mocks_auth_service_clear() {
+        let s = state();
+        assert!(
+            rs(
+                "POST",
+                "/api/v1/testing/mocks/auth",
+                r#"{"principal":"u_123"}"#,
+                &s
+            )
+            .contains("200"),
+            "auth mock ok"
+        );
+        assert!(
+            rs(
+                "POST",
+                "/api/v1/testing/mocks/auth",
+                r#"{"principal":""}"#,
+                &s
+            )
+            .contains("400"),
+            "blank principal 400"
+        );
+        rs(
+            "POST",
+            "/api/v1/testing/mocks/services",
+            r#"{"service":"auth","response":{"user":"u_1"}}"#,
+            &s,
+        );
+        let snap = rs("GET", "/api/v1/testing", "", &s);
+        assert!(
+            snap.contains(r#""auth":{"enabled":true,"principal":"u_123"}"#),
+            "got: {snap}"
+        );
+        assert!(snap.contains(r#""auth":{"user":"u_1"}"#), "canned: {snap}");
+        let clear = rs("DELETE", "/api/v1/testing/mocks", "", &s);
+        assert!(clear.contains("\"count\":2"), "got: {clear}");
+        assert!(
+            !rs("GET", "/api/v1/testing", "", &s).contains("\"enabled\":true"),
+            "mocks cleared"
         );
     }
 }

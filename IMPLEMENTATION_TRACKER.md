@@ -18,7 +18,7 @@
 | 💾 **Caching** | 75 | ~55 | ~6 | 14 |
 | 🔒 **Secrets** | 45 | ~32 | ~4 | 9 |
 | ⚙️ **Infrastructure** | 200 | ~35 | ~9 | ~165 |
-| 🧪 **Testing** | 180 | 0 | 0 | 180 |
+| 🧪 **Testing** | 180 | ~30 | ~9 | ~150 |
 | 📝 **Documentation** | 140 | 20 | 5 | 115 |
 | 🔧 **Tooling** | 185 | 10 | 0 | 175 |
 | 🌊 **Streaming** | 65 | 0 | 0 | 65 |
@@ -396,32 +396,31 @@
 ---
 
 ### 9. Testing Infrastructure (Commits 1273, 1423, 1926)
-**Status**: 🔴 Not Started  
+**Status**: 🟡 Core Complete (daemon emulation)  
 **Priority**: 🔥 High  
 **Effort**: 4-5 weeks
 
 #### Key Features
-- [ ] **Test Databases** (commit 1273)
-  - NewTestDatabase API
-  - Superuser support (commits 2158, 2163)
-  - Automatic cleanup
-  - Bridge commits: `TBD`
+- [x] **Test Databases** (commit 1273)
+  - NewTestDatabase API → `POST /api/v1/testing/databases` returns isolated namespace `t{seq}_{name}`
+  - Superuser support (commits 2158, 2163) → `superuser` flag per instance
+  - Automatic cleanup → `DELETE /api/v1/testing/databases` destroys all, reports count
+  - Bridge commits: TestRegistry in daemon/src/testing.rs (9 tests)
 
-- [ ] **Test Harness** (commit 1423)
-  - Default log levels
-  - Test isolation
-  - Bridge commits: `TBD`
+- [x] **Test Harness** (commit 1423)
+  - Default log levels → test mode defaults to quiet `error` level; unknown values fall back safely
+  - Test isolation → unique namespaces per database; enter/exit mode roundtrip
+  - Bridge commits: /api/v1/testing/mode/enter|exit
 
-- [ ] **E2E Tests** (commit 1926)
-  - JavaScript app testing
-  - Full stack tests
-  - Bridge commits: `TBD`
+- [x] **E2E Tests** (commit 1926)
+  - JavaScript app testing → n/a (Rust framework); e2e-tests crate covers the full TCP+HTTP stack instead (36 daemon tests)
+  - Full stack tests → e2e-tests/src/lib.rs DaemonGuard harness
+  - Bridge commits: pre-existing e2e-tests crate
 
-- [ ] **Mocking** (commit 1737)
-  - Auth mocking
-  - Service mocking
-  - Bridge commits: `TBD`
-
+- [x] **Mocking** (commit 1737)
+  - Auth mocking → `POST /api/v1/testing/mocks/auth` canned principal bypass
+  - Service mocking → `POST /api/v1/testing/mocks/services` canned responses; `DELETE /api/v1/testing/mocks` clears all
+  - Bridge commits: Mocks registry + to_json snapshot shape pinned by tests
 #### Related Encore Commits
 ```
 1273: NewTestDatabase

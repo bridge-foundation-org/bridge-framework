@@ -106,6 +106,14 @@ Unauthorized requests get `401` with body `{"error":"unauthenticated","message":
 | POST | `/api/v1/infra/databases` | Upsert database config (validated) |
 | GET | `/api/v1/infra/databases` | List database configs |
 | POST | `/api/v1/infra/tls` | Set gateway TLS status |
+| GET | `/api/v1/testing` | Test harness snapshot (mode/databases/mocks) |
+| POST | `/api/v1/testing/mode/enter` | Enter test mode (default quiet logs) |
+| POST | `/api/v1/testing/mode/exit` | Exit test mode (404 if not active) |
+| POST | `/api/v1/testing/databases` | Provision isolated test database |
+| DELETE | `/api/v1/testing/databases` | Destroy all test databases |
+| POST | `/api/v1/testing/mocks/auth` | Mock auth with canned principal |
+| POST | `/api/v1/testing/mocks/services` | Register canned service response |
+| DELETE | `/api/v1/testing/mocks` | Clear all mocks |
 
 ---
 
@@ -534,6 +542,67 @@ Validates engine ∈ {postgres, mysql, sqlite} and port 1-65535; violations → 
 Snapshot then reports `"tls":{"enabled":true,"cert":"/certs/a.pem"}`.
 Before any TLS update: `"tls":{"configured":false}`. Empty `cert_path`
 records enabled-with-no-cert.
+
+---
+
+## Testing
+
+Test harness support (Encore `testing` parity): isolated test databases,
+test mode with quiet default logs, and auth/service mocking. All state is
+daemon-side; `GET /api/v1/testing` returns the full snapshot.
+
+### GET /api/v1/testing
+
+```json
+{"mode":{"active":false},"databases":[],"mocks":{"auth":{"enabled":false},"services":{}}}
+```
+
+### POST /api/v1/testing/mode/enter / POST /api/v1/testing/mode/exit
+
+```json
+{"log_level": "warn"}
+```
+
+Unknown/empty levels fall back to `error` (quiet-by-default). Exit when
+not active → `404`.
+
+### POST /api/v1/testing/databases
+
+```json
+{"name": "users", "superuser": true}
+→ 200 {"namespace":"t1_users","superuser":true}
+```
+
+Each instance gets a unique namespace (`t{seq}_{name}`) so same-name
+tests never collide. `superuser` maps to Encore's migrator/superuser
+test roles.
+
+### DELETE /api/v1/testing/databases
+
+Destroys every live test database:
+`200 {"message":"cleaned up","destroyed":2}`.
+
+### POST /api/v1/testing/mocks/auth
+
+```json
+{"principal": "u_123"} → 200 {"message":"auth mocked","principal":"u_123"}
+```
+
+While set, auth checks pass as this principal (Encore commit 1737/1819).
+Blank principal → `400`.
+
+### POST /api/v1/testing/mocks/services
+
+```json
+{"service": "auth", "response": {"user": "u_1"}}
+```
+
+Response body is stored verbatim and echoed in the snapshot under
+`mocks.services`. Missing service name → `400`.
+
+### DELETE /api/v1/testing/mocks
+
+Clears all mocks: `200 {"message":"mocks cleared","count":2}`.
 
 ---
 
