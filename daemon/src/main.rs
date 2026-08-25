@@ -33,6 +33,7 @@ mod shutdown;
 mod sqldb;
 mod state;
 mod staticfiles;
+mod storage;
 mod streaming;
 mod tcp;
 mod tracing;

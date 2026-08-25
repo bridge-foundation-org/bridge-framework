@@ -22,7 +22,7 @@ use crate::middleware::{MiddlewareBuilder, MiddlewareContext, Scope};
 use crate::ratelimit::BucketKey;
 use crate::sqldb;
 use crate::state::{LogLevel, SharedState};
-use crate::staticfiles::{StaticMount, StaticResult};
+use crate::staticfiles::{mime_for, StaticMount, StaticResult};
 use crate::streaming;
 use crate::transactions;
 use crate::validation::{self, violations_json, Rule};
@@ -285,6 +285,32 @@ fn handle(mut stream: TcpStream, state: SharedState) -> std::io::Result<()> {
             return serve_request(stream, state, &req, &req_id, start);
         }
         if let Some(bytes) = static_byte_response(&req, &state, clean_path) {
+            return stream.write_all(&bytes).and_then(|_| stream.flush());
+        }
+    }
+
+    // Object storage reads — keyed GET/HEAD serves raw bytes when authorized
+    // (public bucket or valid `?exp=&sig=`); otherwise a JSON 403/404.
+    // `?meta=1` skips this block so the router can return object metadata,
+    // and bucket listings always go through the router.
+    if clean_path.starts_with("/api/v1/storage/objects/")
+        && (method == "GET" || method == "HEAD")
+        && !req.path.contains("meta=1")
+        && clean_path.matches('/').count() >= 5
+    {
+        if let Some(bytes) = storage_download_response(&state, &req.path, method == "HEAD") {
+            return stream.write_all(&bytes).and_then(|_| stream.flush());
+        }
+    }
+
+    // Object storage signed writes — a valid `?exp=&sig=` IS the authorization
+    // (presigned requests carry no headers, so daemon-token auth cannot apply).
+    // Invalid/absent signatures fall through to the router's normal gating.
+    if clean_path.starts_with("/api/v1/storage/objects/")
+        && matches!(method.as_str(), "PUT" | "DELETE")
+        && path.contains("sig=")
+    {
+        if let Some(bytes) = storage_signed_write_response(&state, &req) {
             return stream.write_all(&bytes).and_then(|_| stream.flush());
         }
     }
@@ -684,6 +710,26 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
             tx_rollback(state, p)
         }
         ("GET", "/api/v1/tx/prune") => tx_prune(state),
+
+        // ── Object storage (Encore buckets) ─────────────────────────────
+        ("GET", "/api/v1/storage") => storage_list(state),
+        ("POST", "/api/v1/storage/buckets") => storage_bucket_create(req, state),
+        ("DELETE", p) if p.starts_with("/api/v1/storage/buckets/") => {
+            storage_bucket_delete(state, p)
+        }
+        ("POST", p) if p.starts_with("/api/v1/storage/buckets/") && p.ends_with("/sign") => {
+            storage_sign(req, state, p)
+        }
+        ("PUT", p) if p.starts_with("/api/v1/storage/objects/") => {
+            storage_object_put(req, state, &req.path)
+        }
+        ("DELETE", p) if p.starts_with("/api/v1/storage/objects/") => {
+            storage_object_delete(state, &req.path)
+        }
+        ("GET", "/api/v1/storage/objects") => storage_list_objects_all(state),
+        ("GET", p) if p.starts_with("/api/v1/storage/objects/") => {
+            storage_object_info(state, &req.path)
+        }
 
         // ── Catch-all ─────────────────────────────────────────────────────
         _ => not_found(),
@@ -1670,6 +1716,394 @@ fn tx_rollback(state: &SharedState, path: &str) -> String {
 fn tx_prune(state: &SharedState) -> String {
     let pruned = state.lock().unwrap().txs.prune_finished();
     ok(&format!(r#"{{"message":"pruned","removed":{pruned}}}"#))
+}
+
+// ── Object storage handlers ───────────────────────────────────────────────────
+
+/// Shared secret for signed URLs (mirrors jwt_secret).
+fn storage_secret() -> Vec<u8> {
+    std::env::var("BRIDGE_STORAGE_SECRET")
+        .or_else(|_| std::env::var("BRIDGE_JWT_SECRET"))
+        .unwrap_or_else(|_| "bridge-dev-secret-do-not-use-in-prod".to_string())
+        .into_bytes()
+}
+
+/// Parse `/api/v1/storage/<kind>/<bucket>[/<key...>]` into (bucket, key?).
+fn split_storage_path(path: &str, kind: &str) -> Option<(String, Option<String>)> {
+    let rest = path.strip_prefix("/api/v1/storage/")?;
+    let rest = rest.strip_prefix(kind)?.strip_prefix('/')?;
+    let (b, k) = match rest.split_once('/') {
+        Some((b, k)) if !b.is_empty() && !k.is_empty() => (b, Some(percent_decode(k))),
+        _ if !rest.is_empty() => (rest, None),
+        _ => return None,
+    };
+    Some((percent_decode(b), k))
+}
+
+/// Decode %XX escapes (and `+` → space) in a URL component.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+                match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(b) => {
+                        out.push(b);
+                        i += 3;
+                    }
+                    None => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn storage_list(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.storage.to_json())
+}
+
+/// Create a bucket: `{"name":"media","public":true}`.
+fn storage_bucket_create(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let Some(name) = extract_json_field(body, "name").filter(|n| !n.is_empty()) else {
+        return bad_request("name required");
+    };
+    let public = extract_json_field(body, "public")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    match state.lock().unwrap().storage.create_bucket(&name, public) {
+        Ok(()) => ok(&format!(
+            r#"{{"message":"bucket created","name":"{name}","public":{public}}}"#
+        )),
+        Err(e) => json_response(409, &format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+fn storage_bucket_delete(state: &SharedState, path: &str) -> String {
+    let Some((bucket, _)) = split_storage_path(path, "buckets") else {
+        return bad_request("bucket name required");
+    };
+    match state.lock().unwrap().storage.delete_bucket(&bucket) {
+        Ok(()) => ok(&format!(
+            r#"{{"message":"bucket deleted","name":"{bucket}"}}"#
+        )),
+        Err(e) => {
+            let status = if e.contains("not found") { 404 } else { 409 };
+            json_response(status, &format!(r#"{{"error":"{e}"}}"#))
+        }
+    }
+}
+
+/// Mint a signed URL: POST /api/v1/storage/buckets/{bucket}/sign
+/// Body: `{"key":"a/b.txt","method":"GET","ttl":900}` (method/ttl optional).
+fn storage_sign(req: &Request, state: &SharedState, path: &str) -> String {
+    let Some((bucket, _)) = split_storage_path(path, "buckets") else {
+        return bad_request("bucket name required");
+    };
+    let body = req.body.trim();
+    let Some(key) = extract_json_field(body, "key").filter(|k| !k.is_empty()) else {
+        return bad_request("key required");
+    };
+    let method = extract_json_field(body, "method")
+        .map(|m| m.to_uppercase())
+        .unwrap_or_else(|| "GET".to_string());
+    let ttl = extract_json_field(body, "ttl")
+        .and_then(|t| t.parse::<u64>().ok())
+        .unwrap_or(900);
+    let secret = storage_secret();
+    let g = state.lock().unwrap();
+    match g.storage.sign_url(&method, &bucket, &key, ttl, &secret) {
+        Ok((exp, sig)) => {
+            drop(g);
+            ok(&format!(
+                r#"{{"url":"/api/v1/storage/objects/{bucket}/{key}?exp={exp}\u0026sig={sig}","method":"{method}","bucket":"{bucket}","key":"{key}","exp":{exp},"sig":"{sig}"}}"#
+            ))
+        }
+        Err(e) => json_response(404, &format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+/// Direct upload: PUT /api/v1/storage/objects/{bucket}/{key} (raw body).
+/// Accepts `?exp=&sig=` for signed uploads; unsigned writes are management ops.
+fn storage_object_put(req: &Request, state: &SharedState, full_path: &str) -> String {
+    let Some((bucket, Some(key))) = split_storage_path(full_path, "objects") else {
+        return bad_request("bucket and key required");
+    };
+    // When query params are present they MUST form a valid signed URL.
+    if let Some(q) = full_path.split('?').nth(1) {
+        if !q.is_empty() {
+            if let Err(e) = verify_signed_query(state, "PUT", q, &bucket, &key) {
+                return json_response(403, &format!(r#"{{"error":"{e}"}}"#));
+            }
+        }
+    }
+    match state
+        .lock()
+        .unwrap()
+        .storage
+        .put_object(&bucket, &key, req.body.as_bytes())
+    {
+        Ok(n) => ok(&format!(
+            r#"{{"message":"object stored","bucket":"{bucket}","key":"{key}","size":{n}}}"#
+        )),
+        Err(e) => storage_err(e),
+    }
+}
+
+/// Delete: DELETE /api/v1/storage/objects/{bucket}/{key}[?exp=&sig=]
+fn storage_object_delete(state: &SharedState, full_path: &str) -> String {
+    let Some((bucket, Some(key))) = split_storage_path(full_path, "objects") else {
+        return bad_request("bucket and key required");
+    };
+    if let Some(q) = full_path.split('?').nth(1) {
+        if !q.is_empty() {
+            if let Err(e) = verify_signed_query(state, "DELETE", q, &bucket, &key) {
+                return json_response(403, &format!(r#"{{"error":"{e}"}}"#));
+            }
+        }
+    }
+    match state.lock().unwrap().storage.delete_object(&bucket, &key) {
+        Ok(()) => ok(&format!(r#"{{"message":"object deleted","key":"{key}"}}"#)),
+        Err(e) => storage_err(e),
+    }
+}
+
+/// Metadata/listing: GET /api/v1/storage/objects lists every bucket's keys;
+/// GET /api/v1/storage/objects/{bucket} lists keys;
+/// GET /api/v1/storage/objects/{bucket}/{key} returns object metadata JSON.
+fn storage_list_objects_all(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    let items: Vec<String> = g
+        .storage
+        .list_buckets()
+        .iter()
+        .map(|b| {
+            let keys = g
+                .storage
+                .list_objects(&b.name)
+                .map(|ks| {
+                    ks.iter()
+                        .map(|k| format!(r#"{{"key":"{k}"}}"#))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default();
+            format!(r#"{{"bucket":"{bn}","objects":[{keys}]}}"#, bn = b.name)
+        })
+        .collect();
+    ok(&format!(r#"{{"buckets":[{}]}}"#, items.join(",")))
+}
+
+fn storage_object_info(state: &SharedState, full_path: &str) -> String {
+    let (path_no_q, query) = match full_path.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (full_path, ""),
+    };
+    let Some((bucket, key)) = split_storage_path(path_no_q, "objects") else {
+        return bad_request("bucket required");
+    };
+
+    // Snapshot auth-relevant facts WITHOUT holding the lock across
+    // verify_signed_query (which locks internally).
+    let public_bucket = {
+        let g = state.lock().unwrap();
+        match g.storage.get_bucket(&bucket) {
+            Some(b) => b.public,
+            None => {
+                return json_response(
+                    404,
+                    &format!(r#"{{"error":"bucket {bucket:?} not found"}}"#),
+                )
+            }
+        }
+    };
+    let Some(key) = key else {
+        let keys = {
+            let g = state.lock().unwrap();
+            g.storage.list_objects(&bucket)
+        };
+        match keys {
+            Ok(keys) => {
+                let items: Vec<String> =
+                    keys.iter().map(|k| format!(r#"{{"key":"{k}"}}"#)).collect();
+                return ok(&format!(
+                    r#"{{"bucket":"{bucket}","objects":[{}]}}"#,
+                    items.join(",")
+                ));
+            }
+            Err(e) => return storage_err(e),
+        }
+    };
+    // Keyed metadata is object data too — same authorization as raw downloads.
+    // Only a query actually carrying sig= counts as a signed request; anything
+    // else (e.g. ?meta=1) falls back to the public-bucket flag.
+    let authorized = if path_no_q.len() != full_path.len() && query.contains("sig=") {
+        verify_signed_query(state, "GET", query, &bucket, &key).is_ok()
+    } else {
+        public_bucket
+    };
+    if !authorized {
+        return json_response(
+            403,
+            r#"{"error":"access denied","message":"bucket is private and no valid signed URL was provided"}"#,
+        );
+    }
+    let result = {
+        let g = state.lock().unwrap();
+        g.storage.get_object(&bucket, &key)
+    };
+    match result {
+        Ok(bytes) => ok(&format!(
+            r#"{{"bucket":"{bucket}","key":"{key}","size":{},"content_type":"{}"}}"#,
+            bytes.len(),
+            mime_for(&key)
+        )),
+        Err(_) => json_response(404, &format!(r#"{{"error":"object {key:?} not found"}}"#)),
+    }
+}
+
+/// Validate `exp`/`sig` query params against the storage secret.
+fn verify_signed_query(
+    state: &SharedState,
+    method: &str,
+    query: &str,
+    bucket: &str,
+    key: &str,
+) -> Result<(), String> {
+    let mut exp = 0u64;
+    let mut sig = String::new();
+    for pair in query.split('&') {
+        match pair.split_once('=') {
+            Some(("exp", v)) => exp = v.parse().unwrap_or(0),
+            Some(("sig", v)) => sig = percent_decode(v),
+            _ => {}
+        }
+    }
+    if sig.is_empty() || exp == 0 {
+        return Err("missing exp/sig query params".into());
+    }
+    state.lock().unwrap().storage.verify_signed_url(
+        method,
+        bucket,
+        key,
+        exp,
+        &sig,
+        &storage_secret(),
+    )
+}
+
+fn storage_err(e: String) -> String {
+    let status = if e.contains("not found") {
+        404
+    } else if e.contains("invalid") || e.contains("must be") || e.contains("may only") {
+        400
+    } else {
+        500
+    };
+    json_response(status, &format!(r#"{{"error":"{e}"}}"#))
+}
+
+/// Serve an object download as raw bytes when the request is authorized:
+/// - public bucket → any GET/HEAD succeeds (Encore publicUrl semantics)
+/// - signed URL    → `?exp=&sig=` must verify for this exact method/bucket/key
+///
+/// Returns None when unauthorized or object missing — caller falls through to
+/// the normal JSON router, which reports the precise error.
+fn storage_download_response(
+    state: &SharedState,
+    full_path: &str,
+    head_only: bool,
+) -> Option<Vec<u8>> {
+    let (path_no_q, query) = match full_path.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (full_path, ""),
+    };
+    let (bucket, key) = split_storage_path(path_no_q, "objects")?;
+    let key = key?;
+
+    // Authorize BEFORE taking the state lock — verify_signed_query locks too.
+    let authorized = if !query.is_empty() {
+        verify_signed_query(state, "GET", query, &bucket, &key).is_ok()
+    } else {
+        state.lock().unwrap().storage.public_read_allowed(&bucket)
+    };
+    if !authorized {
+        return None;
+    }
+    let bytes = {
+        let g = state.lock().unwrap();
+        g.storage.get_object(&bucket, &key).ok()?
+    };
+    let mime = mime_for(&key);
+    let mut out = Vec::with_capacity(bytes.len() + 256);
+    out.extend_from_slice(b"HTTP/1.1 200 OK\r\n" as &[u8]);
+    out.extend_from_slice(format!("Content-Type: {mime}\r\n").as_bytes());
+    out.extend_from_slice(format!("Content-Length: {}\r\n", bytes.len()).as_bytes());
+    out.extend_from_slice(format!("Access-Control-Allow-Origin: {}\r\n", cors_origin()).as_bytes());
+    out.extend_from_slice(b"Connection: close\r\n\r\n");
+    if !head_only {
+        out.extend_from_slice(&bytes);
+    }
+    Some(out)
+}
+
+/// Execute a signed PUT/DELETE whose `?exp=&sig=` already verified.
+/// Returns the raw HTTP response bytes, or None when verification fails
+/// (caller falls through to the authenticated JSON router).
+fn storage_signed_write_response(state: &SharedState, req: &Request) -> Option<Vec<u8>> {
+    let (path_no_q, query) = match req.path.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (req.path.as_str(), ""),
+    };
+    let (bucket, key) = split_storage_path(path_no_q, "objects")?;
+    let key = key?;
+    verify_signed_query(state, &req.method, query, &bucket, &key).ok()?;
+    let body = format!(
+        r#"{{"message":"{}","bucket":"{bucket}","key":"{key}"}}"#,
+        if req.method == "PUT" {
+            "object stored"
+        } else {
+            "object deleted"
+        }
+    );
+    let mut out = Vec::with_capacity(body.len() + 192);
+    out.extend_from_slice(b"HTTP/1.1 200 OK\r\n" as &[u8]);
+    out.extend_from_slice(b"Content-Type: application/json\r\n" as &[u8]);
+    out.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
+    out.extend_from_slice(format!("Access-Control-Allow-Origin: {}\r\n", cors_origin()).as_bytes());
+    out.extend_from_slice(b"Connection: close\r\n\r\n");
+    out.extend_from_slice(body.as_bytes());
+    let method = req.method.clone();
+    let bucket2 = bucket.clone();
+    let key2 = key.clone();
+    let g = state.lock().unwrap();
+    let res = if method == "PUT" {
+        g.storage
+            .put_object(&bucket2, &key2, req.body.as_bytes())
+            .map(|_| ())
+    } else {
+        g.storage.delete_object(&bucket2, &key2)
+    };
+    match res {
+        Ok(()) => Some(out),
+        Err(_) => None,
+    }
 }
 
 // ── Watch / hot-reload handlers ───────────────────────────────────────────────

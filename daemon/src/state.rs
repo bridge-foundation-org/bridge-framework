@@ -18,6 +18,7 @@ use crate::pubsub::Broker;
 use crate::ratelimit::RateLimiter;
 use crate::secrets::SecretsRegistry;
 use crate::staticfiles::StaticRegistry;
+use crate::storage::StorageRegistry;
 use crate::streaming::StreamRegistry;
 use crate::transactions::TxRegistry;
 use crate::validation::ValidationRegistry;
@@ -224,6 +225,8 @@ pub struct State {
     pub auth: AuthRegistry,
     /// Store-backed transaction registry.
     pub txs: TxRegistry,
+    /// Object storage buckets (Encore `buckets`).
+    pub storage: StorageRegistry,
     /// Monotonically increasing trace ID counter.
     trace_counter: u64,
     /// RNG state for sampling (simple LCG).
@@ -261,6 +264,7 @@ impl State {
             static_files: StaticRegistry::new(),
             auth: AuthRegistry::new(),
             txs: TxRegistry::new(),
+            storage: StorageRegistry::new(),
             trace_counter: 0,
             rng_state: 12345678901234567,
         }

@@ -13,7 +13,7 @@
 | 🏗️ **Core Runtime** | 450 | 0 | 0 | 450 |
 | 🎯 **TypeScript Runtime** | 380 | 0 | 0 | 380 |
 | 🔐 **Authentication** | 85 | 0 | 0 | 85 |
-| 📦 **Object Storage** | 120 | 0 | 0 | 120 |
+| 📦 **Object Storage** | 120 | ~95 | 25 | 120 |
 | 📨 **Pub/Sub** | 95 | 0 | 0 | 95 |
 | 💾 **Caching** | 75 | 0 | 0 | 75 |
 | 🔒 **Secrets** | 45 | 0 | 0 | 45 |
@@ -165,32 +165,33 @@
 ---
 
 ### 4. Object Storage (Commits 1619-1899)
-**Status**: 🔴 Not Started  
+**Status**: ✅ Core Complete (daemon emulation)  
 **Priority**: 🔥 High  
 **Effort**: 4-5 weeks
 
 #### Key Features
-- [ ] **Bucket Management** (commit 1619)
-  - Create/list/delete buckets
-  - S3-compatible API
-  - Local development emulation
+- [x] **Bucket Management** (commit 1619) — daemon/src/storage.rs
+  - Create/list/delete buckets (empty-only delete), filesystem-backed objects
+  - S3-compatible name validation (3-63 chars, lowercase alnum + '-' + '.')
+  - Local development emulation under BRIDGE_STORAGE_DIR
+  - Endpoints: POST /api/v1/storage/buckets, DELETE .../buckets/{b}, GET /api/v1/storage
   - Bridge commits: `TBD`
 
-- [ ] **Public Buckets** (commits 1643, 1661)
-  - Public read access
-  - CORS configuration
-  - CDN integration
+- [x] **Public Buckets** (commits 1643, 1661) — daemon/src/storage.rs
+  - Public read access: unsigned GET serves raw bytes with correct MIME type
+  - Private buckets reject unauthenticated reads AND metadata probes (403 JSON)
+  - CORS on all storage responses; no CDN layer
   - Bridge commits: `TBD`
 
-- [ ] **Signed URLs** (commits 1711, 1715, 1719)
-  - Upload URLs
-  - Download URLs
-  - Expiration handling
+- [x] **Signed URLs** (commits 1711, 1715, 1719) — daemon/src/storage.rs
+  - Upload URLs: PUT .../objects/{b}/{key}?exp=&sig= executes headerless
+  - Download URLs: byte-accurate GET; signature bound to METHOD|bucket|key|exp
+  - Expiration enforced; constant-time HMAC-SHA256 compare
+  - Mint via POST /api/v1/storage/buckets/{b}/sign {"key","method","ttl"}
   - Bridge commits: `TBD`
 
-- [ ] **Bucket References** (commits 1629, 1714)
-  - Type-safe bucket refs
-  - Scoped access patterns
+- [~] **Bucket References** (commits 1629, 1714)
+  - Registry-level bucket refs done; type-safe codegen refs pending codegen work
   - Bridge commits: `TBD`
 
 #### Related Encore Commits
