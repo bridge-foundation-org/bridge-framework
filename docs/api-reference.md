@@ -93,6 +93,11 @@ Unauthorized requests get `401` with body `{"error":"unauthenticated","message":
 | DELETE | `/api/v1/cache/entry/:ks/:key` | Delete entry |
 | POST | `/api/v1/cache/mget` | Batch get |
 | POST | `/api/v1/cache/mset` | Batch set |
+| GET | `/api/v1/secrets` | List registered secrets (no plaintext) |
+| POST | `/api/v1/secrets/set` | Register secret (inline/env/file/vault) |
+| POST | `/api/v1/secrets/get` | Display value (redacted unless reveal) |
+| POST | `/api/v1/secrets/check` | Verify named secrets resolve (409 on missing) |
+| DELETE | `/api/v1/secrets/:name` | Remove secret from registry |
 
 ---
 
@@ -416,6 +421,51 @@ Batch writes take a flat pairs object plus an optional shared TTL:
 ```json
 {"keyspace": "batch", "pairs": {"a": "\"v1\"", "b": "\"v2\""}, "ttl_ms": 5000}
 ```
+
+---
+
+## Secrets
+
+Secret registry backing Encore-style `secrets.get()`. Values resolve
+lazily from four source kinds; plaintext never appears in listings and is
+revealed only by explicit opt-in.
+
+### POST /api/v1/secrets/set
+
+```json
+{"name": "db_pw", "source": {"kind": "inline", "value": "hunter2"}}
+```
+
+Source kinds:
+
+- `{"kind":"inline","value":"..."}` — literal value (dev/test)
+- `{"kind":"env","env_var":"DB_PW"}` — resolved from the environment at read time
+- `{"kind":"file","path":"/run/secrets/pw"}` — file read lazily, trimmed
+- `{"kind":"vault","provider":"hashicorp","path":"secret/app"}` — external vault stub (falls back to `NAME_UPPERCASED` env var locally)
+
+Response: `{"message":"secret set","name":"db_pw","redacted":true}`.
+
+### POST /api/v1/secrets/get
+
+Redacted by default:
+
+```json
+{"name": "db_pw"}          → {"name":"db_pw","value":"***"}
+{"name": "db_pw", "reveal": true} → {"name":"db_pw","value":"hunter2"}
+```
+
+A registered-but-unresolvable secret (missing env var / unreadable file)
+returns `409 {"error":"secret not resolvable"}` on reveal. Unknown names →
+`404`.
+
+### POST /api/v1/secrets/check
+
+```json
+{"names": ["db_pw", "stripe_key"]}
+```
+
+All resolve → `200 {"ok":true,...}`. Any missing →
+`409 {"ok":false,"missing":["stripe_key"],"results":[...]}`.
 
 ---
 

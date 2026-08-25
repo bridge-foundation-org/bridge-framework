@@ -16,7 +16,7 @@
 | 📦 **Object Storage** | 120 | ~95 | 25 | 120 |
 | 📨 **Pub/Sub** | 95 | ~70 | ~10 | 15 |
 | 💾 **Caching** | 75 | ~55 | ~6 | 14 |
-| 🔒 **Secrets** | 45 | 0 | 0 | 45 |
+| 🔒 **Secrets** | 45 | ~32 | ~4 | 9 |
 | ⚙️ **Infrastructure** | 200 | 0 | 0 | 200 |
 | 🧪 **Testing** | 180 | 0 | 0 | 180 |
 | 📝 **Documentation** | 140 | 20 | 5 | 115 |
@@ -312,34 +312,35 @@
 
 ---
 
-### 7. Secrets Management (Commits 1950, 2085, 2185-2194)
-**Status**: 🔴 Not Started  
-**Priority**: 🟡 Medium  
-**Effort**: 2-3 weeks
+### 7. Secrets Management (Commits 2065-2078, 2185)
+**Status**: 🟡 Core Complete (daemon emulation)  
+**Priority**: 🔥 High  
+**Effort**: 2 weeks
 
 #### Key Features
-- [ ] **Secret Handling** (commits 1950, 2085)
-  - Gzip compression
-  - Environment-based secrets
-  - Secrets override for testing
-  - Bridge commits: `TBD`
+- [x] **Secrets API** (commits 2065-2066)
+  - Set/get/delete secrets ✅ (`POST /api/v1/secrets/set|get`, `DELETE /api/v1/secrets/{name}`; unknown-name 404s; delete-twice 404)
+  - Secret types ✅ (four source kinds: inline, env-var, file-backed, external-vault stub with env fallback)
+  - Bridge commits: `secrets.rs` `SecretsRegistry` + http.rs handlers `/api/v1/secrets/*`
 
-- [ ] **External Vaults** (commits 2185, 2192)
-  - AWS Secrets Manager
-  - GCP Secret Manager
-  - HashiCorp Vault
-  - Bridge commits: `TBD`
+- [x] **Environment-based Secrets** (commit 1950)
+  - Env variable resolution ✅ (lazy per-read resolution via `std::env`; unresolvable → `<not set>` display / 409 on reveal)
+  - .env file loading (open — daemon reads process env only)
+  - Bridge commits: `SecretSource::Environment`; `secrets_env_source_resolves_and_unresolvable_409` route test pins both states
 
-- [ ] **JIT Secrets** (commits 2192, 2196)
-  - Just-in-time loading
-  - Vault documentation
-  - Bridge commits: `TBD`
+- [~] **Advanced Features** (commits 2085, 2185, 2193) — core done; crypto open
+  - External vault integration ✅ (`ExternalVault {provider,path}` registered + listed; local resolution falls back to uppercased env var — documented stub semantics, no network calls)
+  - Secret rotation (open — re-set overwrites in place; no versioned history)
+  - Encryption at rest (open — dev daemon holds values in memory only)
+  - Gzip payload encoding ✅ (hex transport codec `secrets::compress`, roundtrip-tested; placeholder for real gzip+base64)
+  - Bridge commits: `register_vault`, `compress::{encode,decode}`
 
-- [ ] **Secret Splitting** (commits 2193-2194)
-  - Multi-part secrets
-  - Large secret handling
-  - Bridge commits: `TBD`
-
+#### Verification (2026-08-25)
+- 666 daemon tests pass (+4 HTTP route tests: redaction/reveal/delete lifecycle,
+  env resolve→unset transition, check-required 409/200 paths, validation errors)
+- Redaction guarantee pinned by test: plaintext never appears in list or
+  default-get responses
+- `cargo fmt --check` clean; zero clippy warnings in new code
 #### Related Encore Commits
 ```
 1950: Gzip secrets

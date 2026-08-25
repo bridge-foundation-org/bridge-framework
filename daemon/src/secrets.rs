@@ -120,6 +120,30 @@ impl SecretsRegistry {
         );
     }
 
+    /// Register a file-backed secret (path read lazily on resolve).
+    pub fn register_file(&self, name: &str, path: &str) {
+        let mut inner = self.0.lock().unwrap();
+        inner.secrets.insert(
+            name.to_string(),
+            Secret {
+                name: name.to_string(),
+                source: SecretSource::File(path.to_string()),
+                redacted: true,
+            },
+        );
+    }
+
+    /// Is `name` registered?
+    pub fn has(&self, name: &str) -> bool {
+        self.0.lock().unwrap().secrets.contains_key(name)
+    }
+
+    /// Display value honoring per-secret redaction (`"***"` when redacted).
+    pub fn get_display(&self, name: &str) -> Option<String> {
+        let inner = self.0.lock().unwrap();
+        inner.secrets.get(name).map(|s| s.display_value())
+    }
+
     /// Get the resolved value of a secret.
     pub fn get(&self, name: &str) -> Option<String> {
         let inner = self.0.lock().unwrap();

@@ -748,6 +748,13 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("POST", "/api/v1/pubsub/nack") => pubsub_nack(req, state),
         ("GET", p) if p.starts_with("/api/v1/pubsub/dlq/") => pubsub_dlq(state, &req.path),
 
+        // ── Secrets management ────────────────────────────────────────────
+        ("GET", "/api/v1/secrets") => secrets_list(state),
+        ("POST", "/api/v1/secrets/set") => secrets_set(req, state),
+        ("POST", "/api/v1/secrets/get") => secrets_get(req, state),
+        ("POST", "/api/v1/secrets/check") => secrets_check(req, state),
+        ("DELETE", p) if p.starts_with("/api/v1/secrets/") => secrets_delete(state, &req.path),
+
         // ── Cache keyspaces (Encore RedisCluster in-memory mode) ──────
         ("GET", "/api/v1/cache") => cache_status(state),
         ("GET", "/api/v1/cache/keyspaces") => cache_keyspace_list(state),
@@ -2366,6 +2373,152 @@ fn pubsub_dlq(state: &SharedState, full_path: &str) -> String {
     ok(&g.pubsub.dlq_messages_json(&topic, &subscriber))
 }
 
+// ── Secrets management ────────────────────────────────────────────────────
+
+fn secrets_list(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&format!(r#"{{"secrets":{}}}"#, g.secrets.list_json()))
+}
+
+/// POST /api/v1/secrets/set — register a secret.
+/// `{"name":"db_pw","source":{"kind":"inline","value":"..."}}` or
+/// `{"kind":"env","env_var":"DB_PW"}` / `{"kind":"file","path":"/run/secrets/pw"}` /
+/// `{"kind":"vault","provider":"hashicorp","path":"secret/app"}`.
+/// Secrets are redacted on registration; GET opts into plaintext via reveal.
+fn secrets_set(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let name = extract_json_field(body, "name").unwrap_or_default();
+    if name.is_empty() {
+        return bad_request("name required");
+    }
+    let Some(src_obj) = extract_json_object(body, "source") else {
+        return bad_request("source object required");
+    };
+    let kind = extract_json_field(&src_obj, "kind").unwrap_or_default();
+    match kind.as_str() {
+        "inline" => {
+            let value = extract_json_field(&src_obj, "value").unwrap_or_default();
+            if value.is_empty() {
+                return bad_request("source.value required");
+            }
+            state.lock().unwrap().secrets.register_inline(&name, &value);
+        }
+        "env" => {
+            let var = extract_json_field(&src_obj, "env_var").unwrap_or_default();
+            if var.is_empty() {
+                return bad_request("source.env_var required");
+            }
+            state.lock().unwrap().secrets.register_env(&name, &var);
+        }
+        "file" => {
+            let path = extract_json_field(&src_obj, "path").unwrap_or_default();
+            if path.is_empty() {
+                return bad_request("source.path required");
+            }
+            state.lock().unwrap().secrets.register_file(&name, &path);
+        }
+        "vault" => {
+            let provider = extract_json_field(&src_obj, "provider").unwrap_or_default();
+            let path = extract_json_field(&src_obj, "path").unwrap_or_default();
+            if provider.is_empty() || path.is_empty() {
+                return bad_request("source.provider and source.path required");
+            }
+            state
+                .lock()
+                .unwrap()
+                .secrets
+                .register_vault(&name, &provider, &path);
+        }
+        other => {
+            return bad_request(&format!(
+                "unknown source kind {other} (inline|env|file|vault)"
+            ));
+        }
+    }
+    ok(&format!(
+        r#"{{"message":"secret set","name":"{name}","redacted":true}}"#
+    ))
+}
+
+/// POST /api/v1/secrets/get — display value of one secret. Redacted by
+/// default (`"***"`); body `{"reveal":true}` returns the plaintext value.
+fn secrets_get(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    let name = extract_json_field(body, "name").unwrap_or_default();
+    if name.is_empty() {
+        return bad_request("name required");
+    }
+    let reveal = extract_json_field(body, "reveal")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if !state.lock().unwrap().secrets.has(&name) {
+        return json_response(404, r#"{"error":"secret not registered"}"#);
+    }
+    if reveal {
+        match state.lock().unwrap().secrets.get(&name) {
+            Some(v) => ok(&format!(r#"{{"name":"{name}","value":"{v}"}}"#)),
+            None => json_response(
+                409,
+                &format!(r#"{{"error":"secret not resolvable","name":"{name}"}}"#),
+            ),
+        }
+    } else {
+        match state.lock().unwrap().secrets.get_display(&name) {
+            Some(d) => ok(&format!(r#"{{"name":"{name}","value":"{d}"}}"#)),
+            None => json_response(404, r#"{"error":"secret not registered"}"#),
+        }
+    }
+}
+
+/// POST /api/v1/secrets/check — verify all named secrets resolve.
+/// Body: `{"names":["a","b"]}` → 200 with per-name status, 409 if any missing.
+fn secrets_check(req: &Request, state: &SharedState) -> String {
+    let Some(keys_json) = extract_json_array(req.body.trim(), "names") else {
+        return bad_request("names array required");
+    };
+    let names = parse_string_array(&keys_json);
+    if names.is_empty() {
+        return bad_request("at least one name required");
+    }
+    let g = state.lock().unwrap();
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let missing = g.secrets.check_required(&refs);
+    let items: Vec<String> = names
+        .iter()
+        .map(|n| {
+            let set = !missing.contains(n);
+            format!(r#"{{"name":"{n}","set":{set}}}"#)
+        })
+        .collect();
+    drop(g);
+    let quoted: Vec<String> = missing.iter().map(|m| format!(r#""{m}""#)).collect();
+    let payload = format!(
+        r#"{{"ok":{ok},"missing":[{miss}],"results":[{items}]}}"#,
+        ok = missing.is_empty(),
+        miss = quoted.join(","),
+        items = items.join(","),
+    );
+    if missing.is_empty() {
+        ok(&payload)
+    } else {
+        json_response(409, &payload)
+    }
+}
+
+/// DELETE /api/v1/secrets/{name} — remove from registry.
+fn secrets_delete(state: &SharedState, full_path: &str) -> String {
+    let path_no_q = full_path.split('?').next().unwrap_or(full_path);
+    let name = path_no_q.strip_prefix("/api/v1/secrets/").unwrap_or("");
+    if name.is_empty() {
+        return bad_request("name required");
+    }
+    if state.lock().unwrap().secrets.delete(name) {
+        ok(r#"{"message":"deleted"}"#)
+    } else {
+        json_response(404, r#"{"error":"secret not registered"}"#)
+    }
+}
+
 // ── Cache keyspaces (Encore RedisCluster in-memory mode) ─────────────────────
 
 fn cache_status(state: &SharedState) -> String {
@@ -3864,6 +4017,142 @@ mod tests {
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0], ("a".to_string(), r##""\"1\"""##.to_string()));
         assert_eq!(pairs[1], ("b".to_string(), "2".to_string()));
+    }
+    #[test]
+    fn secrets_set_get_redacted_reveal_delete() {
+        let s = state();
+        let set = rs(
+            "POST",
+            "/api/v1/secrets/set",
+            r#"{"name":"db_pw","source":{"kind":"inline","value":"hunter2"}}"#,
+            &s,
+        );
+        assert!(set.contains("\"redacted\":true"), "got: {set}");
+        // Default GET is redacted — plaintext must not leak.
+        let peek = rs("POST", "/api/v1/secrets/get", r#"{"name":"db_pw"}"#, &s);
+        assert!(peek.contains("***"), "got: {peek}");
+        assert!(!peek.contains("hunter2"), "plaintext leaked: {peek}");
+        // List shows registered + set status, still no plaintext.
+        let list = rs("GET", "/api/v1/secrets", "", &s);
+        assert!(list.contains(r#""name":"db_pw""#), "got: {list}");
+        assert!(
+            !list.contains("hunter2"),
+            "plaintext leaked in list: {list}"
+        );
+        // Reveal returns plaintext.
+        let reveal = rs(
+            "POST",
+            "/api/v1/secrets/get",
+            r#"{"name":"db_pw","reveal":true}"#,
+            &s,
+        );
+        assert!(reveal.contains("hunter2"), "got: {reveal}");
+        // Delete → 404 on second delete.
+        assert!(
+            rs("DELETE", "/api/v1/secrets/db_pw", "", &s).contains("200"),
+            "first delete ok"
+        );
+        assert!(
+            rs("DELETE", "/api/v1/secrets/db_pw", "", &s).contains("404"),
+            "second delete must 404"
+        );
+    }
+
+    #[test]
+    fn secrets_env_source_resolves_and_unresolvable_409() {
+        std::env::set_var("BRIDGE_TEST_SEC_VAR", "env-secret-42");
+        let s = state();
+        rs(
+            "POST",
+            "/api/v1/secrets/set",
+            r#"{"name":"api_key","source":{"kind":"env","env_var":"BRIDGE_TEST_SEC_VAR"}}"#,
+            &s,
+        );
+        let reveal = rs(
+            "POST",
+            "/api/v1/secrets/get",
+            r#"{"name":"api_key","reveal":true}"#,
+            &s,
+        );
+        assert!(reveal.contains("env-secret-42"), "got: {reveal}");
+        std::env::remove_var("BRIDGE_TEST_SEC_VAR");
+        // Env var gone now: display stays redacted (***) — no state leak;
+        // reveal reports 409 unresolvable.
+        let unset = rs("POST", "/api/v1/secrets/get", r#"{"name":"api_key"}"#, &s);
+        assert!(unset.contains("***"), "got: {unset}");
+        assert!(!unset.contains("env-secret-42"), "leak: {unset}");
+        let dead = rs(
+            "POST",
+            "/api/v1/secrets/get",
+            r#"{"name":"api_key","reveal":true}"#,
+            &s,
+        );
+        assert!(dead.contains("409"), "unresolvable must 409: {dead}");
+    }
+
+    #[test]
+    fn secrets_check_reports_missing_with_409() {
+        let s = state();
+        rs(
+            "POST",
+            "/api/v1/secrets/set",
+            r#"{"name":"have_it","source":{"kind":"inline","value":"x"}}"#,
+            &s,
+        );
+        let resp = rs(
+            "POST",
+            "/api/v1/secrets/check",
+            r#"{"names":["have_it","never_registered"]}"#,
+            &s,
+        );
+        assert!(resp.contains("409"), "got: {resp}");
+        assert!(resp.contains(r#""ok":false"#), "got: {resp}");
+        assert!(
+            resp.contains(r#""missing":["never_registered"]"#),
+            "got: {resp}"
+        );
+        // All-present case is a plain 200.
+        let okcase = rs(
+            "POST",
+            "/api/v1/secrets/check",
+            r#"{"names":["have_it"]}"#,
+            &s,
+        );
+        assert!(okcase.contains("\"ok\":true"), "got: {okcase}");
+        assert!(!okcase.contains("409"), "got: {okcase}");
+    }
+
+    #[test]
+    fn secrets_validation_errors() {
+        assert!(
+            r("POST", "/api/v1/secrets/set", "{}").contains("400"),
+            "name required"
+        );
+        assert!(
+            r("POST", "/api/v1/secrets/set", r#"{"name":"x"}"#).contains("400"),
+            "source required"
+        );
+        assert!(
+            r(
+                "POST",
+                "/api/v1/secrets/set",
+                r#"{"name":"x","source":{"kind":"bogus"}}"#,
+            )
+            .contains("400"),
+            "unknown kind must 400"
+        );
+        assert!(
+            r("POST", "/api/v1/secrets/get", "{}").contains("400"),
+            "get name required"
+        );
+        assert!(
+            r("POST", "/api/v1/secrets/check", r#"{"names":[]}"#).contains("400"),
+            "empty names must 400"
+        );
+        assert!(
+            r("POST", "/api/v1/secrets/get", r#"{"name":"ghost"}"#).contains("404"),
+            "unknown secret must 404"
+        );
     }
 }
 
