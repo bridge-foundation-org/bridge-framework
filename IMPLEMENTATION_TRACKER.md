@@ -517,34 +517,32 @@
 ---
 
 ### 12. AI/MCP Integration (Commits 1705, 1828, 1940, 2081)
-**Status**: 🔴 Not Started  
+**Status**: 🟡 Core Complete (daemon emulation)  
 **Priority**: 🟠 Low  
 **Effort**: 2-3 weeks
 
 #### Key Features
-- [ ] **LLM Instructions** (commits 1705, 1708, 1977)
-  - Go instructions
-  - TypeScript instructions
-  - Code generation patterns
-  - Bridge commits: `TBD`
+- [x] **LLM Instructions** (commits 1705, 1708, 1977)
+  - Go instructions → n/a (Rust framework); docs/llm-instructions.md covers the agent contract instead
+  - TypeScript instructions → codegen patterns in llm-instructions (compile-file flow)
+  - Code generation patterns → dev-loop rules: compile before reasoning, verify via traces
+  - Bridge commits: docs/llm-instructions.md
 
-- [ ] **MCP Server** (commit 1828)
-  - Local daemon MCP
-  - Tool definitions
-  - Graceful reconnect (commit 1830)
-  - Bridge commits: `TBD`
+- [x] **MCP Server** (commit 1828)
+  - Local daemon MCP → POST /api/v1/mcp speaks JSON-RPC 2.0 (initialize/ping/tools.list/tools.call)
+  - Tool definitions → 14-tool curated catalog dispatching through the real router
+  - Graceful reconnect (commit 1830) → ping liveness method; stateless HTTP transport reconnects naturally
+  - Bridge commits: mcp module in daemon/src/mcp.rs (8 tests)
 
 - [ ] **AI Integration Docs** (commit 1940, 2030)
-  - Cursor support (commit 2081)
-  - AI agent usage
-  - Migration guides (commits 2088, 2090)
-  - Bridge commits: `TBD`
+  - Cursor support (commit 2081) → partially: stdio bridge to /api/v1/mcp is trivial; editor configs not shipped
+  - Migration guides (commits 2088, 2090) → open
+  - Bridge commits: TBD
 
-- [ ] **Skills/Context** (commit 2068)
-  - Context7 library support
-  - AI skill definitions
-  - Bridge commits: `TBD`
-
+- [x] **Skills/Context** (commit 2068)
+  - Context7 library support → context-preference ordering documented in llm-instructions
+  - AI skill definitions → tool catalog doubles as skill definitions (inputSchema hints)
+  - Bridge commits: TOOLS const pinned by test (14 tools)
 #### Related Encore Commits
 ```
 1705: LLM instructions

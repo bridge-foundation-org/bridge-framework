@@ -20,6 +20,7 @@ mod go_codegen;
 mod http;
 mod infra_config;
 mod logger;
+mod mcp;
 mod metrics;
 mod metrics_exporters;
 mod middleware;

@@ -73,6 +73,16 @@ pub(crate) struct Request {
 }
 
 impl Request {
+    /// Construct a synthetic request (MCP tool dispatch, tests).
+    pub(crate) fn synthetic(method: &str, path: &str, body: &str) -> Self {
+        Self {
+            method: method.to_string(),
+            path: path.to_string(),
+            headers: vec![],
+            body: body.to_string(),
+        }
+    }
+
     fn header(&self, name: &str) -> Option<&str> {
         let name_lc = name.to_lowercase();
         self.headers
@@ -490,7 +500,7 @@ fn render_stream_snapshot(state: &SharedState, endpoint: &str) -> String {
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
-fn route(req: &Request, state: &SharedState, req_id: &str) -> String {
+pub(crate) fn route(req: &Request, state: &SharedState, req_id: &str) -> String {
     let path = req.path.split('?').next().unwrap_or(&req.path);
 
     // Auth middleware — enforce token on non-public endpoints
@@ -775,6 +785,9 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("POST", "/api/v1/deploy/status") => deploy_status(req, state),
         ("POST", "/api/v1/deploy/rollback") => deploy_rollback(req, state),
         ("GET", "/api/v1/deploy/dockerfile") => deploy_dockerfile(state),
+
+        // ── MCP (Model Context Protocol) surface ─────────────────────
+        ("POST", "/api/v1/mcp") => mcp_request(req, state),
 
         // ── Secrets management ────────────────────────────────────────────
         ("GET", "/api/v1/secrets") => secrets_list(state),
@@ -2647,6 +2660,22 @@ fn deploy_dockerfile(state: &SharedState) -> String {
         .replace('\r', "\\r")
         .replace('\t', "\\t");
     ok(&format!(r#"{{"dockerfile":"{esc}"}}"#))
+}
+
+// ── MCP (Model Context Protocol) surface ──────────────────────────────
+
+/// POST /api/v1/mcp — JSON-RPC 2.0 body:
+/// `{"method":"tools/call","params":{"name":"infra_snapshot"}}`
+fn mcp_request(req: &Request, state: &SharedState) -> String {
+    let body = req.body.trim();
+    if body.is_empty() {
+        return bad_request("jsonrpc body required");
+    }
+    let method = extract_json_field(body, "method").unwrap_or_default();
+    let params = extract_json_field(body, "params")
+        .map(|p| p.replace("\\\"", "\""))
+        .unwrap_or_else(|| "{}".into());
+    json_response(200, &crate::mcp::handle(state, &method, &params))
 }
 
 // ── Secrets management ────────────────────────────────────────────────────
@@ -4632,6 +4661,31 @@ mod tests {
             !rs("GET", "/api/v1/testing", "", &s).contains("\"enabled\":true"),
             "mocks cleared"
         );
+    }
+
+    #[test]
+    fn mcp_http_endpoint_jsonrpc_roundtrip() {
+        let s = state();
+        // tools/list through HTTP.
+        let list = rs("POST", "/api/v1/mcp", r#"{"method":"tools/list"}"#, &s);
+        assert!(list.contains("200"), "got: {list}");
+        assert!(
+            list.contains(r#"tools":[{"name":"compile""#),
+            "catalog: {list}"
+        );
+        // Real call through HTTP: provision a test DB.
+        let call = rs(
+            "POST",
+            "/api/v1/mcp",
+            r#"{"method":"tools/call","params":{"name":"test_db_create","body":"{\"name\":\"users\"}"}}"#,
+            &s,
+        );
+        assert!(call.contains("200"), "got: {call}");
+        assert!(call.contains(r#"t1_users"#), "namespace: {call}");
+        // Empty body → 400; unknown method → protocol error inside 200.
+        assert!(rs("POST", "/api/v1/mcp", "", &s).contains("400"));
+        let unk = rs("POST", "/api/v1/mcp", r#"{"method":"nope"}"#, &s);
+        assert!(unk.contains("-32601"), "got: {unk}");
     }
 
     #[test]

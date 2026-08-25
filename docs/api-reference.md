@@ -119,6 +119,7 @@ Unauthorized requests get `401` with body `{"error":"unauthenticated","message":
 | POST | `/api/v1/deploy/status` | Advance status (state-machine enforced) |
 | POST | `/api/v1/deploy/rollback` | Roll target back to superseded revision |
 | GET | `/api/v1/deploy/dockerfile` | Generated multi-platform Dockerfile |
+| POST | `/api/v1/mcp` | MCP JSON-RPC 2.0 endpoint (tools/list, tools/call) |
 
 ---
 
@@ -661,6 +662,35 @@ missing target → `400`.
 Returns the generated multi-stage Dockerfile as a JSON string:
 platform-aware (`BUILDPLATFORM`/`TARGETPLATFORM` for buildx) with a
 manifest-first dependency layer for cache hits (Encore 2083/2188).
+
+---
+
+## MCP
+
+Model Context Protocol endpoint (Encore commit 1828 parity): exposes
+the daemon control plane as JSON-RPC 2.0 tools an AI agent can list
+and invoke. See [llm-instructions](./llm-instructions.md) for the
+agent-side contract.
+
+### POST /api/v1/mcp
+
+```json
+{"method": "tools/list"}
+```
+
+→ catalog of 14 tools (`compile`, `services_list`, `traces_list`,
+`secrets_set`, `cache_write`, `publish_event`, `test_db_create`,
+`mock_auth`, `deploy_create`, ...) each with input-schema hints.
+
+```json
+{"method": "tools/call", "params": {"name": "infra_snapshot"}}
+{"method": "tools/call", "params": {"name": "secrets_set", "body": "{\"name\":\"k\",\"source\":{\"kind\":\"inline\",\"value\":\"v\"}}"}}
+```
+
+Tool calls dispatch through the real HTTP router; the response is
+returned as content text with `isError:true` when status ≥ 400.
+Protocol errors use JSON-RPC codes: `-32601` unknown method, `-32602`
+unknown tool. `initialize` and `ping` support handshakes/reconnect.
 
 ---
 
