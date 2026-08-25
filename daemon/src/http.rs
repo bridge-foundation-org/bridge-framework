@@ -18,6 +18,7 @@ use std::thread;
 use std::time::Instant;
 
 use crate::auth::{self, bearer_from_header};
+use crate::deploy::{DeployRegistry, Status as DeployStatus};
 use crate::middleware::{MiddlewareBuilder, MiddlewareContext, Scope};
 use crate::pubsub;
 use crate::ratelimit::BucketKey;
@@ -767,6 +768,13 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("POST", "/api/v1/testing/mocks/auth") => testing_mock_auth(req, state),
         ("POST", "/api/v1/testing/mocks/services") => testing_mock_service(req, state),
         ("DELETE", "/api/v1/testing/mocks") => testing_mocks_clear(state),
+
+        // ── Deployments (Encore CLI deploy parity) ────────────────────
+        ("GET", "/api/v1/deploy") => deploy_list(state),
+        ("POST", "/api/v1/deploy") => deploy_create(req, state),
+        ("POST", "/api/v1/deploy/status") => deploy_status(req, state),
+        ("POST", "/api/v1/deploy/rollback") => deploy_rollback(req, state),
+        ("GET", "/api/v1/deploy/dockerfile") => deploy_dockerfile(state),
 
         // ── Secrets management ────────────────────────────────────────────
         ("GET", "/api/v1/secrets") => secrets_list(state),
@@ -2556,6 +2564,89 @@ fn testing_mock_service(req: &Request, state: &SharedState) -> String {
 fn testing_mocks_clear(state: &SharedState) -> String {
     let n = state.lock().unwrap().testing.clear_mocks();
     ok(&format!(r#"{{"message":"mocks cleared","count":{n}}}"#))
+}
+
+// ── Deployments (Encore CLI deploy parity) ────────────────────────────────
+
+fn deploy_list(state: &SharedState) -> String {
+    let g = state.lock().unwrap();
+    ok(&g.deploys.to_json())
+}
+
+/// POST /api/v1/deploy —
+/// `{"target":"production","platform":"linux/amd64","revision":"abc123"}`.
+fn deploy_create(req: &Request, state: &SharedState) -> String {
+    let b = req.body.trim();
+    let target = extract_json_field(b, "target").unwrap_or_default();
+    let platform = extract_json_field(b, "platform").unwrap_or_else(|| "linux/amd64".into());
+    let revision = extract_json_field(b, "revision").unwrap_or_default();
+    match state
+        .lock()
+        .unwrap()
+        .deploys
+        .create(&target, &platform, &revision)
+    {
+        Ok(id) => ok(&format!(
+            r#"{{"id":"{id}","status":"queued","platform":"{platform}"}}"#
+        )),
+        Err(e) => bad_request(&e),
+    }
+}
+
+/// POST /api/v1/deploy/status —
+/// `{"id":"dep-1","status":"building"}` (state-machine validated).
+fn deploy_status(req: &Request, state: &SharedState) -> String {
+    let b = req.body.trim();
+    let id = extract_json_field(b, "id").unwrap_or_default();
+    let status = extract_json_field(b, "status").unwrap_or_default();
+    let Some(s) = DeployStatus::parse(&status) else {
+        return bad_request("valid status required (queued|building|deploying|deployed|failed)");
+    };
+    match state.lock().unwrap().deploys.set_status(&id, s) {
+        Ok(()) => ok(&format!(r#"{{"id":"{id}","status":{}}}"#, s.as_str())),
+        Err(e) => bad_request(&e),
+    }
+}
+
+/// POST /api/v1/deploy/rollback — `{"target":"production"}`.
+fn deploy_rollback(req: &Request, state: &SharedState) -> String {
+    let target = extract_json_field(req.body.trim(), "target").unwrap_or_default();
+    if target.is_empty() {
+        return bad_request("target required");
+    }
+    let mut g = state.lock().unwrap();
+    match g.deploys.rollback(&target) {
+        Some(id) => {
+            let rev = g
+                .deploys
+                .deployments
+                .iter()
+                .find(|d| d.id == id)
+                .map(|d| d.revision.clone())
+                .unwrap_or_default();
+            drop(g);
+            ok(&format!(
+                r#"{{"message":"rolled back","id":"{id}","revision":"{rev}","status":"deployed"}}"#
+            ))
+        }
+        None => {
+            drop(g);
+            not_found()
+        }
+    }
+}
+
+/// GET /api/v1/deploy/dockerfile?app=name&bin=binary — generated build file.
+fn deploy_dockerfile(state: &SharedState) -> String {
+    let app = state.lock().unwrap().app_name.clone();
+    // Minimal JSON string escaping for the embedded Dockerfile text.
+    let esc: String = DeployRegistry::dockerfile(&app, "server")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    ok(&format!(r#"{{"dockerfile":"{esc}"}}"#))
 }
 
 // ── Secrets management ────────────────────────────────────────────────────
@@ -4540,6 +4631,137 @@ mod tests {
         assert!(
             !rs("GET", "/api/v1/testing", "", &s).contains("\"enabled\":true"),
             "mocks cleared"
+        );
+    }
+
+    #[test]
+    fn deploy_create_and_full_lifecycle() {
+        let s = state();
+        let created = rs(
+            "POST",
+            "/api/v1/deploy",
+            r#"{"target":"production","platform":"linux/arm64","revision":"abc123"}"#,
+            &s,
+        );
+        assert!(created.contains("\"id\":\"dep-1\""), "got: {created}");
+        assert!(created.contains("\"status\":\"queued\""), "got: {created}");
+        // Validation: bad platform and empty revision.
+        assert!(
+            rs(
+                "POST",
+                "/api/v1/deploy",
+                r#"{"target":"p","platform":"bogus","revision":"r"}"#,
+                &s
+            )
+            .contains("400"),
+            "bad platform must 400"
+        );
+        // Drive the state machine; skipping stages must 400.
+        assert!(
+            rs(
+                "POST",
+                "/api/v1/deploy/status",
+                r#"{"id":"dep-1","status":"deployed"}"#,
+                &s
+            )
+            .contains("400"),
+            "skip must 400"
+        );
+        for st in ["building", "deploying", "deployed"] {
+            let resp = rs(
+                "POST",
+                "/api/v1/deploy/status",
+                &format!(r#"{{"id":"dep-1","status":"{st}"}}"#),
+                &s,
+            );
+            assert!(resp.contains("200"), "{st}: {resp}");
+        }
+        // Terminal is terminal.
+        assert!(
+            rs(
+                "POST",
+                "/api/v1/deploy/status",
+                r#"{"id":"dep-1","status":"building"}"#,
+                &s
+            )
+            .contains("400"),
+            "terminal must reject"
+        );
+    }
+
+    #[test]
+    fn deploy_rollback_returns_to_previous_revision() {
+        let s = state();
+        rs(
+            "POST",
+            "/api/v1/deploy",
+            r#"{"target":"prod","platform":"linux/amd64","revision":"v1"}"#,
+            &s,
+        );
+        rs(
+            "POST",
+            "/api/v1/deploy",
+            r#"{"target":"prod","platform":"linux/amd64","revision":"v2"}"#,
+            &s,
+        );
+        for st in ["building", "deploying", "deployed"] {
+            rs(
+                "POST",
+                "/api/v1/deploy/status",
+                &format!(r#"{{"id":"dep-1","status":"{st}"}}"#),
+                &s,
+            );
+            rs(
+                "POST",
+                "/api/v1/deploy/status",
+                &format!(r#"{{"id":"dep-2","status":"{st}"}}"#),
+                &s,
+            );
+        }
+        // Rollback swaps live v2 → previous v1.
+        let rb = rs(
+            "POST",
+            "/api/v1/deploy/rollback",
+            r#"{"target":"prod"}"#,
+            &s,
+        );
+        assert!(
+            rb.contains(r#""revision":"v1","status":"deployed""#),
+            "got: {rb}"
+        );
+        // No predecessor on a fresh target → 404.
+        assert!(
+            rs(
+                "POST",
+                "/api/v1/deploy/rollback",
+                r#"{"target":"ghost"}"#,
+                &s
+            )
+            .contains("404"),
+            "unknown target must 404"
+        );
+        assert!(
+            rs("POST", "/api/v1/deploy/rollback", "{}", &s).contains("400"),
+            "missing target must 400"
+        );
+    }
+
+    #[test]
+    fn deploy_dockerfile_is_generated_and_escaped() {
+        let resp = r("GET", "/api/v1/deploy/dockerfile", "");
+        assert!(resp.contains("200"), "got: {resp}");
+        assert!(
+            resp.contains("BUILDPLATFORM"),
+            "platform-aware build missing: {resp}"
+        );
+        // The embedded Dockerfile must be a valid JSON string (newlines escaped).
+        assert!(
+            !resp.contains("\\n\\n\\n\"") || resp.contains("\\n"),
+            "escaped"
+        );
+        assert!(
+            !resp.contains("# Generated by bridge\n"),
+            "raw newline leaked into JSON string"
         );
     }
 }

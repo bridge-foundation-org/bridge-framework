@@ -13,6 +13,7 @@ use protocol::DaemonMode;
 
 use crate::auth::AuthRegistry;
 use crate::cache::CacheRegistry;
+use crate::deploy::DeployRegistry;
 use crate::infra_config::InfraConfig;
 use crate::metrics::Registry as MetricsRegistry;
 use crate::middleware::MiddlewareRegistry;
@@ -236,6 +237,8 @@ pub struct State {
     pub infra: InfraConfig,
     /// Test harness state (databases, mocks, test mode).
     pub testing: TestRegistry,
+    /// Deployment registry (targets, revisions, status machine).
+    pub deploys: DeployRegistry,
     /// Monotonically increasing trace ID counter.
     trace_counter: u64,
     /// RNG state for sampling (simple LCG).
@@ -277,6 +280,7 @@ impl State {
             cache: CacheRegistry::new(),
             infra: InfraConfig::new(),
             testing: TestRegistry::new(),
+            deploys: DeployRegistry::new(),
             trace_counter: 0,
             rng_state: 12345678901234567,
         }

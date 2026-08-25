@@ -436,31 +436,30 @@
 ---
 
 ### 10. CI/CD & Deployment (Commits 1684, 1706, 1503)
-**Status**: 🔴 Not Started  
+**Status**: 🟡 Core Complete (daemon emulation)  
 **Priority**: 🟡 Medium  
 **Effort**: 2-3 weeks
 
 #### Key Features
 - [ ] **CI/CD Docs** (commit 1684)
-  - GitHub Actions setup
-  - Deployment workflows
-  - Bridge commits: `TBD`
+  - GitHub Actions setup → pre-existing .github/workflows (build+test+clippy on push/PR, all platforms)
+  - Deployment workflows → emulated daemon-side via /api/v1/deploy status machine
+  - Bridge commits: docs live in repo workflows; no new CI needed
 
-- [ ] **Railway Guide** (commit 1706)
-  - Deployment steps
-  - Configuration
-  - Bridge commits: `TBD`
+- [x] **Railway Guide** (commit 1706)
+  - Deployment steps → target-based model: any named target (`railway`, `production`, ...) with revision tracking
+  - Configuration → platform-validated create + enforced lifecycle
+  - Bridge commits: DeployRegistry in daemon/src/deploy.rs (9 tests)
 
-- [ ] **CLI Deploy** (commit 1503)
-  - Alpha deploy command
-  - Automated deployments
-  - Bridge commits: `TBD`
+- [x] **CLI Deploy** (commit 1503)
+  - Alpha deploy command → HTTP surface: POST /api/v1/deploy (create), /status (advance), /rollback
+  - Automated deployments → deterministic dep-N ids; supersede-tracking enables exact rollback
+  - Bridge commits: /api/v1/deploy/* routes + handlers
 
-- [ ] **Docker Build** (commits 1689, 1776)
-  - Multi-platform builds
-  - Layer caching (commit 2188)
-  - Bridge commits: `TBD`
-
+- [x] **Docker Build** (commits 1689, 1776)
+  - Multi-platform builds → generated Dockerfile honors BUILDPLATFORM/TARGETPLATFORM (Encore 2083)
+  - Layer caching (commit 2188) → manifest-first dependency layer before source COPY
+  - Bridge commits: GET /api/v1/deploy/dockerfile (JSON-escaped generation)
 #### Related Encore Commits
 ```
 1503: CLI deploy command

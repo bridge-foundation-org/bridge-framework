@@ -114,6 +114,11 @@ Unauthorized requests get `401` with body `{"error":"unauthenticated","message":
 | POST | `/api/v1/testing/mocks/auth` | Mock auth with canned principal |
 | POST | `/api/v1/testing/mocks/services` | Register canned service response |
 | DELETE | `/api/v1/testing/mocks` | Clear all mocks |
+| GET | `/api/v1/deploy` | List deployments |
+| POST | `/api/v1/deploy` | Create deployment (validated platform/revision) |
+| POST | `/api/v1/deploy/status` | Advance status (state-machine enforced) |
+| POST | `/api/v1/deploy/rollback` | Roll target back to superseded revision |
+| GET | `/api/v1/deploy/dockerfile` | Generated multi-platform Dockerfile |
 
 ---
 
@@ -603,6 +608,59 @@ Response body is stored verbatim and echoed in the snapshot under
 ### DELETE /api/v1/testing/mocks
 
 Clears all mocks: `200 {"message":"mocks cleared","count":2}`.
+
+---
+
+## Deployments
+
+Deployment tracking (Encore CLI deploy parity): create deployments per
+named target, drive them through an enforced lifecycle, roll back to the
+exact revision that was superseded, and generate the build Dockerfile.
+
+### GET /api/v1/deploy
+
+```json
+{"deployments":[{"id":"dep-1","target":"production","platform":"linux/arm64","revision":"abc123","status":"queued"}]}
+```
+
+### POST /api/v1/deploy
+
+```json
+{"target": "production", "platform": "linux/arm64", "revision": "abc123"}
+→ 200 {"id":"dep-1","status":"queued","platform":"linux/arm64"}
+```
+
+Platform must be `os/arch[/variant]` (defaults `linux/amd64`); empty
+target/revision → `400`.
+
+### POST /api/v1/deploy/status
+
+```json
+{"id": "dep-1", "status": "building"}
+```
+
+Legal transitions only: `queued → building → deploying → deployed`, any
+mid-flight state may go `failed`; terminal states are final. Illegal
+moves or unknown status strings → `400`. When a deployment goes live,
+any prior live deployment on the same target is demoted to `failed`
+with `superseded_by` recording who replaced it.
+
+### POST /api/v1/deploy/rollback
+
+```json
+{"target": "production"}
+→ 200 {"message":"rolled back","id":"dep-1","revision":"v1","status":"deployed"}
+```
+
+Promotes exactly the revision the current live deployment displaced
+(ping-pong works). No live deployment or no predecessor → `404`;
+missing target → `400`.
+
+### GET /api/v1/deploy/dockerfile
+
+Returns the generated multi-stage Dockerfile as a JSON string:
+platform-aware (`BUILDPLATFORM`/`TARGETPLATFORM` for buildx) with a
+manifest-first dependency layer for cache hits (Encore 2083/2188).
 
 ---
 
