@@ -44,7 +44,7 @@ impl Secret {
             SecretSource::Inline(value) => Some(value.clone()),
             SecretSource::ExternalVault { .. } => {
                 // In production: call vault API. For local dev: env var fallback.
-                std::env::var(&self.name.to_uppercase().replace('-', "_")).ok()
+                std::env::var(self.name.to_uppercase().replace('-', "_")).ok()
             }
         }
     }
@@ -221,7 +221,7 @@ pub mod compress {
 
     pub fn decode(hex: &str) -> Result<Vec<u8>, String> {
         let hex = hex.trim();
-        if hex.len() % 2 != 0 {
+        if !hex.len().is_multiple_of(2) {
             return Err("invalid hex length".to_string());
         }
         (0..hex.len())

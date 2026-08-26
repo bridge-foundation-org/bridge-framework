@@ -1196,7 +1196,7 @@ mod tests {
             message: "bad \"value\"".into(),
         }];
         let json = violations_json(&v);
-        assert!(json.contains(r#"\"ema\"\""#) == false);
+        assert!(!json.contains(r#"\"ema\"\""#));
         assert!(json.contains("\\\""));
         assert!(json.contains("validation_failed"));
     }

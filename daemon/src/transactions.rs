@@ -2,6 +2,11 @@
 //!
 //! Multi-step transaction coordination with rollback
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 /// Transaction state
@@ -154,7 +159,7 @@ impl TransactionManager {
             .ok_or_else(|| format!("Transaction {} not found", tx_id))?;
 
         if tx.state != TransactionState::Active {
-            return Err(format!("Cannot commit non-active transaction"));
+            return Err("Cannot commit non-active transaction".to_string());
         }
 
         tx.state = TransactionState::Committed;

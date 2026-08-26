@@ -115,7 +115,7 @@ pub fn parse_resp(reader: &mut impl BufRead) -> Result<Resp, String> {
         _ => {
             // Inline command
             Ok(Resp::Array(
-                line.split_whitespace().map(|s| Resp::bulk(s)).collect(),
+                line.split_whitespace().map(Resp::bulk).collect(),
             ))
         }
     }
@@ -160,7 +160,7 @@ impl Entry {
         }
     }
     fn is_expired(&self) -> bool {
-        self.expires_at.map_or(false, |t| Instant::now() >= t)
+        self.expires_at.is_some_and(|t| Instant::now() >= t)
     }
     fn type_name(&self) -> &'static str {
         match &self.val {
@@ -369,7 +369,7 @@ impl Store {
                     } else {
                         stop.min(len - 1)
                     } as usize;
-                    if s > e as usize {
+                    if s > e {
                         return Resp::Array(vec![]);
                     }
                     Resp::Array(list[s..=e].iter().map(|v| Resp::bulk(v.clone())).collect())
@@ -692,7 +692,7 @@ fn dispatch_inner(args: &[String], store: &mut Store) -> Result<Resp, Resp> {
             store.mget(&args[1..])
         }
         "MSET" => {
-            if args.len() < 3 || (args.len() - 1) % 2 != 0 {
+            if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
                 return Ok(Resp::err("ERR wrong number of arguments for MSET"));
             }
             let pairs: Vec<(String, String)> = args[1..]
@@ -762,7 +762,7 @@ fn dispatch_inner(args: &[String], store: &mut Store) -> Result<Resp, Resp> {
         // ── Hash commands ──────────────────────────────────────────────────────
         "HSET" => {
             require_min(args, 4)?;
-            if (args.len() - 2) % 2 != 0 {
+            if !(args.len() - 2).is_multiple_of(2) {
                 return Err(Resp::err(
                     "ERR wrong number of arguments for 'hset' command",
                 ));
@@ -783,7 +783,7 @@ fn dispatch_inner(args: &[String], store: &mut Store) -> Result<Resp, Resp> {
         }
         "HMGET" => {
             require_min(args, 3)?;
-            store.hmget(&args[1], &args[2..].to_vec())
+            store.hmget(&args[1], &args[2..])
         }
         "HGETALL" => {
             require(args, 2)?;
@@ -791,7 +791,7 @@ fn dispatch_inner(args: &[String], store: &mut Store) -> Result<Resp, Resp> {
         }
         "HDEL" => {
             require_min(args, 3)?;
-            store.hdel(&args[1], &args[2..].to_vec())
+            store.hdel(&args[1], &args[2..])
         }
         "HLEN" => {
             require(args, 2)?;
@@ -912,11 +912,7 @@ impl MiniRedis {
 fn serve(stream: TcpStream, store: Arc<Mutex<Store>>) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
-    loop {
-        let msg = match parse_resp(&mut reader) {
-            Ok(v) => v,
-            Err(_) => break,
-        };
+    while let Ok(msg) = parse_resp(&mut reader) {
         let resp = {
             let args = args_from(&msg);
             let mut g = store.lock().expect("store lock");

@@ -3,6 +3,11 @@
 //! Generates validation schemas for configuration, enabling type-safe config loading
 //! and runtime validation with helpful error messages.
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 /// Represents a configuration value type
@@ -236,10 +241,8 @@ impl ConfigSchema {
 
         // Check for required fields
         for field in &self.fields {
-            if field.required && !values.contains_key(&field.name) {
-                if field.default.is_none() {
-                    errors.push(format!("Required field '{}' is missing", field.name));
-                }
+            if field.required && !values.contains_key(&field.name) && field.default.is_none() {
+                errors.push(format!("Required field '{}' is missing", field.name));
             }
         }
 
@@ -314,10 +317,8 @@ impl ConfigSchema {
                     return Err(format!("Field '{}' must be a float", field.name));
                 }
             }
-            ConfigType::Boolean => {
-                if !matches!(value.to_lowercase().as_str(), "true" | "false") {
-                    return Err(format!("Field '{}' must be true or false", field.name));
-                }
+            ConfigType::Boolean if !matches!(value.to_lowercase().as_str(), "true" | "false") => {
+                return Err(format!("Field '{}' must be true or false", field.name));
             }
             _ => {
                 // Complex types not validated here

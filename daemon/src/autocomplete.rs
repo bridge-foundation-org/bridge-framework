@@ -2,7 +2,10 @@
 //!
 //! Generates shell completions for bash, zsh, fish, and powershell
 
-use std::collections::HashMap;
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
 
 /// Shell type for autocomplete
 #[derive(Clone, Debug, PartialEq, Eq)]

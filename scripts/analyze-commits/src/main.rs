@@ -178,11 +178,11 @@ fn generate_priorities(categories: &HashMap<String, usize>) -> Vec<(String, usiz
                 .find(|(name, _)| name == cat)
                 .map(|(_, w)| w)
                 .unwrap_or(&0);
-            (cat.clone(), (*count as usize) * weight)
+            (cat.clone(), *count * weight)
         })
         .collect();
 
-    priority_list.sort_by(|a, b| b.1.cmp(&a.1));
+    priority_list.sort_by_key(|&(_, weight)| std::cmp::Reverse(weight));
     priority_list
 }
 

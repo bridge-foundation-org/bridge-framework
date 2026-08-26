@@ -9,8 +9,13 @@
 //! - Service catalog streaming
 //! - Custom event types
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 // ── SSE Frame ──────────────────────────────────────────────────────────────
 
@@ -41,20 +46,20 @@ impl SseFrame {
         if let Some(id) = &self.id {
             output.push_str("id: ");
             output.push_str(id);
-            output.push_str("\n");
+            output.push('\n');
         }
 
         output.push_str("event: ");
         output.push_str(&self.event);
-        output.push_str("\n");
+        output.push('\n');
 
         for line in self.data.lines() {
             output.push_str("data: ");
             output.push_str(line);
-            output.push_str("\n");
+            output.push('\n');
         }
 
-        output.push_str("\n");
+        output.push('\n');
         output
     }
 }
@@ -291,7 +296,7 @@ pub fn render_traces(state: &State, count: usize) -> String {
     let recent: Vec<&crate::state::TraceEntry> = state.traces.iter().rev().take(count).collect();
     let mut out = String::new();
     for t in recent.iter().rev() {
-        let frame = SseFrame::new("trace", &t.to_json()).with_id(t.id.clone());
+        let frame = SseFrame::new("trace", t.to_json()).with_id(t.id.clone());
         out.push_str(&frame.encode());
     }
     out

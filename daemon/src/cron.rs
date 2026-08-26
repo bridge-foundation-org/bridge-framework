@@ -2,6 +2,11 @@
 //!
 //! Parse and execute cron jobs on a schedule
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 /// Cron field (minute, hour, day, month, weekday)
@@ -21,7 +26,7 @@ impl CronField {
             CronField::Any => true,
             CronField::Specific(v) => *v == value,
             CronField::Range(start, end) => value >= *start && value <= *end,
-            CronField::Step(step, max) => value % step == 0 && value <= *max,
+            CronField::Step(step, max) => value.is_multiple_of(*step) && value <= *max,
             CronField::List(values) => values.contains(&value),
         }
     }

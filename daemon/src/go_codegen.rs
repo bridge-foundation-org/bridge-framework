@@ -2,6 +2,11 @@
 //!
 //! Generates type-safe Go clients from service definitions
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 /// Go type mapping for Bridge types
@@ -238,7 +243,7 @@ impl GoMethod {
             code.push_str(&self.body);
             code.push_str("}\n");
         } else {
-            code.push_str("\n");
+            code.push('\n');
         }
 
         code
@@ -433,7 +438,7 @@ mod tests {
     fn test_go_client_generator_new() {
         let gen = GoClientGenerator::new("client");
         assert_eq!(gen.package, "client");
-        assert!(gen.imports.len() > 0);
+        assert!(!gen.imports.is_empty());
     }
 
     #[test]

@@ -2,6 +2,11 @@
 //!
 //! Manage Redis cluster topology, slot distribution, and failover
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 
 /// Redis cluster slot
@@ -52,7 +57,7 @@ impl ClusterNode {
         }
     }
 
-    pub fn as_replica(mut self) -> Self {
+    pub fn into_replica(mut self) -> Self {
         self.is_master = false;
         self
     }
@@ -166,7 +171,7 @@ impl ClusterTopology {
 
         self.replicas
             .entry(master_id.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(replica_id.to_string());
 
         Ok(())
@@ -314,7 +319,7 @@ mod tests {
 
     #[test]
     fn test_cluster_node_as_replica() {
-        let node = ClusterNode::new("node1", "localhost", 6379).as_replica();
+        let node = ClusterNode::new("node1", "localhost", 6379).into_replica();
         assert!(!node.is_master);
     }
 
@@ -404,7 +409,7 @@ mod tests {
     fn test_cluster_topology_add_replica() {
         let mut topology = ClusterTopology::new();
         let master = ClusterNode::new("master", "localhost", 6379);
-        let replica = ClusterNode::new("replica", "localhost", 6380).as_replica();
+        let replica = ClusterNode::new("replica", "localhost", 6380).into_replica();
 
         topology.add_node(master).unwrap();
         topology.add_node(replica).unwrap();
@@ -417,8 +422,8 @@ mod tests {
     fn test_cluster_topology_get_replicas() {
         let mut topology = ClusterTopology::new();
         let master = ClusterNode::new("master", "localhost", 6379);
-        let replica1 = ClusterNode::new("replica1", "localhost", 6380).as_replica();
-        let replica2 = ClusterNode::new("replica2", "localhost", 6381).as_replica();
+        let replica1 = ClusterNode::new("replica1", "localhost", 6380).into_replica();
+        let replica2 = ClusterNode::new("replica2", "localhost", 6381).into_replica();
 
         topology.add_node(master).unwrap();
         topology.add_node(replica1).unwrap();

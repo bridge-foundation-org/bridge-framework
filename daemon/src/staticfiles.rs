@@ -142,7 +142,7 @@ pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
     }
     msg.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in msg.chunks_exact(64) {
+    for chunk in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
         for i in 0..16 {
             w[i] = u32::from_be_bytes([
@@ -736,12 +736,9 @@ mod tests {
 
         // Encoded or literal parent traversal must never resolve to the outside file.
         for evil in ["/../outside/secret.txt", "/..%2foutside%2fsecret.txt"] {
-            match reg.serve("GET", evil, None, None) {
-                StaticResult::Found { body, .. } => {
-                    assert_ne!(body, b"top secret", "{evil} escaped the root");
-                }
-                _ => {} // 404 is fine
-            }
+            if let StaticResult::Found { body, .. } = reg.serve("GET", evil, None, None) {
+                assert_ne!(body, b"top secret", "{evil} escaped the root");
+            } // any other outcome is a safe rejection
         }
         // Sanity: legit file still serves.
         assert!(matches!(

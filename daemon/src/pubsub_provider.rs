@@ -2,6 +2,11 @@
 //!
 //! Abstract pub/sub interface supporting multiple providers (memory, AWS SNS/SQS, GCP PubSub)
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 /// Pub/Sub provider types
@@ -156,7 +161,7 @@ impl PubSubBackend for MemoryPubSub {
         let message_id = message.metadata.message_id.clone();
         self.topics
             .entry(topic.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(message);
         Ok(message_id)
     }

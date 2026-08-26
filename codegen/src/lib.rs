@@ -243,7 +243,7 @@ pub fn generate_openapi(file: &BridgeFile) -> String {
             };
 
             paths.push(format!(
-                r#""{oa_path}":{{{method_lower}:{{{tags}"{service_name}_{ep_name}",{}"parameters":{params},"security":{security},"responses":{{"200":{{"description":"Success"}},"400":{{"description":"Bad Request"}},"500":{{"description":"Server Error"}}}}{req_body}}}}}"#,
+                r#""{oa_path}":{{{method_lower}:{{{tags}"{service_name}_{ep_name}","parameters":{params},"security":{security},"responses":{{"200":{{"description":"Success"}},"400":{{"description":"Bad Request"}},"500":{{"description":"Server Error"}}}}{req_body}}}}}"#,
                 tags = tags_json,
                 service_name = svc.name,
                 ep_name = ep.name,
@@ -319,7 +319,7 @@ pub fn generate_manifest(
 
 /// Convert `kebab-case` or `snake_case` to `PascalCase`.
 fn pascal(s: &str) -> String {
-    s.split(|c| c == '-' || c == '_')
+    s.split(['-', '_'])
         .filter(|p| !p.is_empty())
         .map(|p| {
             let mut chars = p.chars();
@@ -570,6 +570,10 @@ mod tests {
         assert!(spec.contains("/users"));
         assert!(spec.contains("{id}"));
         assert!(spec.contains("path"));
+        // Regression: a stray positional `{}` in the template used to emit
+        // the `"tags":[...]` block twice, producing invalid JSON.
+        assert_eq!(spec.matches(r#""tags":["users"],"#).count(), 2); // once per endpoint
+        assert!(spec.contains(r#""tags":["users"],"users_list","parameters""#));
     }
 
     #[test]

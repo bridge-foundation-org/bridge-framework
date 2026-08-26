@@ -2,6 +2,11 @@
 //!
 //! Trace requests across services with spans and context propagation
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -199,7 +204,7 @@ impl TraceCollector {
     /// Record a span
     pub fn record_span(&mut self, span: Span) {
         let trace_id = span.trace_id.clone();
-        let spans = self.spans.entry(trace_id).or_insert_with(Vec::new);
+        let spans = self.spans.entry(trace_id).or_default();
 
         if spans.len() < self.max_spans_per_trace {
             spans.push(span);
@@ -350,7 +355,6 @@ mod tests {
         span = span.end();
         let duration = span.duration_ms();
         assert!(duration.is_some());
-        assert!(duration.unwrap() >= 0);
     }
 
     #[test]
@@ -440,15 +444,15 @@ mod tests {
     fn test_generate_trace_id() {
         let id1 = generate_trace_id();
         let id2 = generate_trace_id();
-        assert!(id1.len() > 0);
-        assert!(id2.len() > 0);
+        assert!(!id1.is_empty());
+        assert!(!id2.is_empty());
     }
 
     #[test]
     fn test_generate_span_id() {
         let id1 = generate_span_id();
         let id2 = generate_span_id();
-        assert!(id1.len() > 0);
-        assert!(id2.len() > 0);
+        assert!(!id1.is_empty());
+        assert!(!id2.is_empty());
     }
 }

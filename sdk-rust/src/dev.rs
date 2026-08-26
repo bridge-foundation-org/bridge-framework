@@ -205,7 +205,12 @@ mod tests {
         let ep = queue_endpoint(Some("x")).unwrap();
         assert_eq!(ep.source, Source::Override);
         // Daemon bus default documented here for grep-ability.
-        let default = resolve_env(None, "BRIDGE_QUEUE_URL_UNSET_7", "http://localhost:8787".to_string()).unwrap();
+        let default = resolve_env(
+            None,
+            "BRIDGE_QUEUE_URL_UNSET_7",
+            "http://localhost:8787".to_string(),
+        )
+        .unwrap();
         if default.source == Source::Default {
             assert_eq!(default.url, "http://localhost:8787");
         }

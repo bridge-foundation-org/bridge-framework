@@ -3,6 +3,11 @@
 //! Enables service structs with field injection and lifecycle management.
 //! Services can define Init and Shutdown methods for setup/teardown.
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -64,7 +69,7 @@ pub struct ServiceDef {
     /// Fields to inject
     pub fields: Vec<FieldDef>,
     /// Service constructor
-    pub constructor: Arc<dyn Fn() -> Box<dyn Any> + Send + Sync>,
+    pub constructor: SharedInstanceConstructor,
 }
 
 impl ServiceDef {
@@ -86,7 +91,7 @@ impl ServiceDef {
     /// Set the constructor
     pub fn with_constructor<F>(mut self, constructor: F) -> Self
     where
-        F: Fn() -> Box<dyn Any> + Send + Sync + 'static,
+        F: Fn() -> BoxedService + Send + Sync + 'static,
     {
         self.constructor = Arc::new(constructor);
         self
@@ -102,12 +107,19 @@ impl std::fmt::Debug for ServiceDef {
     }
 }
 
+/// Type-erased service instance restricted to thread-safe payloads.
+type BoxedService = Box<dyn Any + Send + Sync>;
+/// Constructor closure producing a [`BoxedService`].
+type SharedInstanceConstructor = Arc<dyn Fn() -> BoxedService + Send + Sync>;
+/// Shared handle to a constructed singleton.
+type SharedInstance = Arc<Mutex<BoxedService>>;
+
 /// Dependency container for service injection
 pub struct ServiceContainer {
     /// Registered service definitions
     services: Arc<Mutex<HashMap<String, ServiceDef>>>,
     /// Singleton instances
-    instances: Arc<Mutex<HashMap<String, Arc<Mutex<Box<dyn Any>>>>>>,
+    instances: Arc<Mutex<HashMap<String, SharedInstance>>>,
 }
 
 impl ServiceContainer {
@@ -142,7 +154,7 @@ impl ServiceContainer {
     }
 
     /// Resolve (instantiate) a service
-    pub fn resolve(&self, name: &str) -> Result<Arc<Mutex<Box<dyn Any>>>, String> {
+    pub fn resolve(&self, name: &str) -> Result<SharedInstance, String> {
         // Check if singleton already exists
         if let Ok(instances) = self.instances.lock() {
             if let Some(instance) = instances.get(name) {

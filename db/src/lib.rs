@@ -92,7 +92,7 @@ impl Db {
         let mut guard = self.inner.lock().unwrap();
         guard
             .entry(ns.to_string())
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(key.to_string(), Entry::new(value));
     }
 
@@ -101,7 +101,7 @@ impl Db {
         let mut guard = self.inner.lock().unwrap();
         guard
             .entry(ns.to_string())
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(key.to_string(), Entry::with_ttl(value, ttl));
     }
 

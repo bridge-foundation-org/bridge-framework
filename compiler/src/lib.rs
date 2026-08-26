@@ -251,11 +251,6 @@ impl ParseError {
         }
     }
 
-    fn with_column(mut self, col: usize) -> Self {
-        self.column = col;
-        self
-    }
-
     /// Format a Rust-compiler-style error message.
     ///
     /// ```text

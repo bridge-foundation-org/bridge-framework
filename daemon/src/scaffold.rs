@@ -2,6 +2,11 @@
 //!
 //! Provides templates for common project types to help users get started quickly.
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 /// Project template type

@@ -673,9 +673,9 @@ fn route_inner(req: &Request, state: &SharedState, path: &str) -> String {
         ("POST", "/api/v1/sampling") => set_sampling(req, state),
 
         // ── Streaming endpoints ───────────────────────────────────────────
-        ("GET", "/api/v1/stream/traces") => stream_traces(state, &req),
-        ("GET", "/api/v1/stream/metrics") => stream_metrics(state, &req),
-        ("GET", "/api/v1/stream/services") => stream_services(state, &req),
+        ("GET", "/api/v1/stream/traces") => stream_traces(state, req),
+        ("GET", "/api/v1/stream/metrics") => stream_metrics(state, req),
+        ("GET", "/api/v1/stream/services") => stream_services(state, req),
 
         // ── Middleware ────────────────────────────────────────────────────
         ("GET", "/api/v1/middleware") => middleware_list(state),
@@ -1060,8 +1060,7 @@ fn extract_json_field(json: &str, field: &str) -> Option<String> {
     let pos = json.find(&needle)?;
     let rest = json[pos + needle.len()..].trim_start();
     let rest = rest.strip_prefix(':')?.trim_start();
-    if rest.starts_with('"') {
-        let inner = &rest[1..];
+    if let Some(inner) = rest.strip_prefix('"') {
         // Scan to the closing quote, honoring backslash escapes so
         // values like "{\"a\":1}" survive instead of truncating at \".
         let bytes = inner.as_bytes();
@@ -1080,7 +1079,7 @@ fn extract_json_field(json: &str, field: &str) -> Option<String> {
         Some(inner[..end].to_string())
     } else {
         // non-string value — take until , or }
-        let end = rest.find(|c| c == ',' || c == '}').unwrap_or(rest.len());
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
         Some(rest[..end].trim().to_string())
     }
 }
@@ -1136,14 +1135,14 @@ fn metrics_prometheus(state: &SharedState) -> String {
     lines.push(format!("bridge_errors_total {}", m.total_errors));
 
     for (key, count) in &m.request_counts {
-        let label = key.replace(' ', "_").replace('/', "_").replace('-', "_");
+        let label = key.replace([' ', '/', '-'], "_");
         lines.push(format!(
             "bridge_endpoint_requests_total{{endpoint=\"{}\"}} {}",
             label, count
         ));
     }
     for (key, errs) in &m.error_counts {
-        let label = key.replace(' ', "_").replace('/', "_").replace('-', "_");
+        let label = key.replace([' ', '/', '-'], "_");
         lines.push(format!(
             "bridge_endpoint_errors_total{{endpoint=\"{}\"}} {}",
             label, errs
@@ -2981,7 +2980,7 @@ fn cache_entries_all(state: &SharedState) -> String {
 
 /// DELETE /api/v1/cache/keyspaces/{ks}?pattern=user:*  (or ?all=1).
 /// Returns how many live entries were invalidated.
-fn cache_invalidate(req: &Request, state: &SharedState, full_path: &str) -> String {
+fn cache_invalidate(_req: &Request, state: &SharedState, full_path: &str) -> String {
     let path_no_q = full_path.split('?').next().unwrap_or(full_path);
     let query = full_path.split('?').nth(1).unwrap_or("");
     let ks = path_no_q
@@ -3384,6 +3383,29 @@ fn config_show(state: &SharedState) -> String {
         wf = watch_files.join(","),
     );
     ok(&body)
+}
+
+// ── Streaming Endpoints ────────────────────────────────────────────────────
+
+fn stream_traces(state: &SharedState, _req: &Request) -> String {
+    // One-shot SSE burst of recent traces; long-lived streaming is served
+    // inline by handle_state_stream (chunked, per-connection).
+    let g = state.lock().unwrap();
+    if g.traces.is_empty() {
+        return streaming::SseFrame::new("traces", r#"{"status":"stream-active","traces":0}"#)
+            .encode();
+    }
+    streaming::render_traces(&g, 50)
+}
+
+fn stream_metrics(state: &SharedState, _req: &Request) -> String {
+    let g = state.lock().unwrap();
+    streaming::render_metrics(&g)
+}
+
+fn stream_services(state: &SharedState, _req: &Request) -> String {
+    let g = state.lock().unwrap();
+    streaming::render_services(&g)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -4985,27 +5007,4 @@ mod tests {
             "raw newline leaked into JSON string"
         );
     }
-}
-
-// ── Streaming Endpoints ────────────────────────────────────────────────────
-
-fn stream_traces(state: &SharedState, _req: &Request) -> String {
-    // One-shot SSE burst of recent traces; long-lived streaming is served
-    // inline by handle_state_stream (chunked, per-connection).
-    let g = state.lock().unwrap();
-    if g.traces.is_empty() {
-        return streaming::SseFrame::new("traces", r#"{"status":"stream-active","traces":0}"#)
-            .encode();
-    }
-    streaming::render_traces(&g, 50)
-}
-
-fn stream_metrics(state: &SharedState, _req: &Request) -> String {
-    let g = state.lock().unwrap();
-    streaming::render_metrics(&g)
-}
-
-fn stream_services(state: &SharedState, _req: &Request) -> String {
-    let g = state.lock().unwrap();
-    streaming::render_services(&g)
 }

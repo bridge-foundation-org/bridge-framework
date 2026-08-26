@@ -159,14 +159,10 @@ impl BridgeConfig {
     pub fn parse(content: &str) -> Result<Self, String> {
         let mut cfg = BridgeConfig::default();
 
-        // Defaults
-        cfg.daemon = DaemonConfig::default();
-        cfg.watch = WatchConfig {
-            enabled: true,
-            poll_ms: 500,
-            dirs: vec![],
-            files: vec![],
-        };
+        // Defaults beyond `BridgeConfig::default()`: the watcher opts in
+        // to a 500 ms poll loop.
+        cfg.watch.enabled = true;
+        cfg.watch.poll_ms = 500;
 
         let mut section = String::new();
         let mut cur_mw: Option<MiddlewareRule> = None;
@@ -458,9 +454,8 @@ fn parse_kv(line: &str) -> Option<(&str, &str)> {
     let key = line[..eq].trim();
     let raw = line[eq + 1..].trim();
     // Strip inline comment after value (outside of strings)
-    let raw = if raw.starts_with('"') {
+    let raw = if let Some(inner) = raw.strip_prefix('"') {
         // Quoted string — find closing quote
-        let inner = &raw[1..];
         let end = inner.find('"')?;
         &inner[..end]
     } else {

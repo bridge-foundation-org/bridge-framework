@@ -378,12 +378,6 @@ fn print_completions(shell: &str) {
     }
 }
 
-const ALL_CMDS: &str = "init ping version health help stop mode-get mode-set compile compile-file \
-services routes auth-status auth-set auth-clear db-put db-get db-del db-keys db-flush \
-pg-create pg-status pg-migrate pg-destroy redis-status redis-ping redis-get redis-set \
-redis-del redis-keys redis-flush trace-list trace-get trace-clear trace-export \
-metrics metrics-clear completions raw";
-
 const BASH_COMPLETION: &str = concat!(
 "# Bridge CLI bash completion — add to ~/.bashrc:\n",
 "#   source <(bridge completions bash)\n",
@@ -576,7 +570,7 @@ fn init_project(dir: &str, template: &str) -> Result<(), String> {
     fs::create_dir_all(p).map_err(|e| format!("create dir: {e}"))?;
     match template {
         "rest-api-auth" => init_rest_api_auth(p, dir),
-        "default" | _ => init_default(p, dir),
+        _ => init_default(p, dir),
     }
 }
 

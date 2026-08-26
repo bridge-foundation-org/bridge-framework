@@ -70,9 +70,9 @@ fn exec(cmd: Command, state: SharedState) -> Response {
         }
 
         // ── Mode ──────────────────────────────────────────────────────────
-        Command::GetMode => Response::Mode(g.mode.clone()),
+        Command::GetMode => Response::Mode(g.mode),
         Command::SetMode(mode) => {
-            g.mode = mode.clone();
+            g.mode = mode;
             Response::Ok(format!("mode={mode}"))
         }
 
@@ -434,12 +434,12 @@ fn redis_cmd(addr: &str, cmd: &str) -> Response {
     let _ = stream.read_to_string(&mut buf);
     // Convert RESP to Data/Ok/Error
     let trimmed = buf.trim_end_matches(['\r', '\n']);
-    if trimmed.starts_with('+') {
-        Response::Ok(trimmed[1..].to_string())
-    } else if trimmed.starts_with('-') {
-        Response::Err(trimmed[1..].to_string())
-    } else if trimmed.starts_with(':') {
-        Response::Data(trimmed[1..].to_string())
+    if let Some(rest) = trimmed.strip_prefix('+') {
+        Response::Ok(rest.to_string())
+    } else if let Some(rest) = trimmed.strip_prefix('-') {
+        Response::Err(rest.to_string())
+    } else if let Some(rest) = trimmed.strip_prefix(':') {
+        Response::Data(rest.to_string())
     } else {
         Response::Data(trimmed.to_string())
     }

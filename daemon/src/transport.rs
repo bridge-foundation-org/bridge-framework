@@ -8,9 +8,12 @@
 //! - Metadata propagation (correlation IDs, trace info)
 //! - Timeout and retry logic
 
+// Parts of this module are forward-scaffolding: their public API is
+// intentionally ahead of its call sites. Trim this allow item-by-item as the
+// dead surface shrinks.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::TcpStream;
 use std::time::Duration;
 
 /// HTTP methods supported for cross-service calls
@@ -48,7 +51,7 @@ pub enum AuthMethod {
     /// API key
     ApiKey { header: String, value: String },
     /// Pre-shared key
-    PSK(String),
+    Psk(String),
 }
 
 /// HTTP Request for cross-service communication
@@ -164,7 +167,7 @@ impl HttpRequest {
             AuthMethod::ApiKey { header, value } => {
                 req.push_str(&format!("{}: {}\r\n", header, value));
             }
-            AuthMethod::PSK(key) => {
+            AuthMethod::Psk(key) => {
                 req.push_str(&format!("X-PSK: {}\r\n", key));
             }
         }
@@ -263,9 +266,9 @@ impl HttpTransport {
     /// Send an HTTP request to a service
     pub fn send(
         &self,
-        host: &str,
-        port: u16,
-        request: &HttpRequest,
+        _host: &str,
+        _port: u16,
+        _request: &HttpRequest,
     ) -> Result<HttpResponse, String> {
         // In a real implementation, this would:
         // 1. Resolve DNS if needed
@@ -355,9 +358,9 @@ mod tests {
 
     #[test]
     fn test_auth_psk() {
-        let auth = AuthMethod::PSK("shared_secret".to_string());
+        let auth = AuthMethod::Psk("shared_secret".to_string());
         match auth {
-            AuthMethod::PSK(secret) => assert_eq!(secret, "shared_secret"),
+            AuthMethod::Psk(secret) => assert_eq!(secret, "shared_secret"),
             _ => panic!("Expected PSK auth"),
         }
     }
